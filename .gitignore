@@ -1,0 +1,33 @@
+# Dependencies + build output
+node_modules/
+.next/
+dist/
+build/
+out/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.tsbuildinfo
+next-env.d.ts
+
+# Secrets + env
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+.pos-writes/
+.runpod-cache/
+*.wav
+*.mp3
+*.opus
+*.log
+
+# Editor / OS cruft
+.DS_Store
+Icon
+Icon?
+Icon
+.idea/
+.vscode/

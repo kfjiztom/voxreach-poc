@@ -1,0 +1,118 @@
+{
+  "restaurant": {
+    "name": "Hearth & Pass",
+    "name_korean": "헌앤패스",
+    "tagline": "Korean Kitchen — tea & banchan, slowly",
+    "tagline_korean": "차와 반찬, 천천히",
+    "concept": "A Korean tea + small-plates house on Locust Street. The Banchan Bar runs every lunch — ten rotating dishes, two carved mains, all you can eat.",
+    "address": {
+      "street": "123 Locust St",
+      "city": "Des Moines",
+      "state": "IA",
+      "zip": "50309",
+      "directions": "Three blocks east of the courthouse on Locust. Two-hour metered street parking; free public ramp on 4th and Walnut after 5pm and on weekends."
+    },
+    "phone": "(515) 555-0100",
+    "email": "hearthandpass@lumenworks-llc.com",
+    "website": "https://mise-demo.lumenworks-llc.com"
+  },
+  "hours": {
+    "monday": "Closed",
+    "tuesday": "11am – 9pm",
+    "wednesday": "11am – 9pm",
+    "thursday": "11am – 9pm",
+    "friday": "11am – 10pm",
+    "saturday": "11am – 10pm",
+    "sunday": "11am – 9pm",
+    "lunch_window": "11am – 2pm daily we're open",
+    "dinner_window": "5pm – close",
+    "kitchen_closes": "30 minutes before posted close",
+    "last_call_drinks": "15 minutes before close"
+  },
+  "banchan_bar": {
+    "name": "Banchan Bar",
+    "description": "All-you-can-eat lunch service. Ten rotating banchan dishes, two carved mains, jasmine rice, kimchi trio, and boricha tea included.",
+    "price": "$24/person",
+    "hours": "Tuesday–Sunday, 11am – 2pm",
+    "kids": "Children 6–12 half price; under 6 free.",
+    "to_go": "Not available — dine-in only."
+  },
+  "menu": {
+    "tea_and_sips": [
+      {"name": "Sejak Green Tea", "price": "$7.00", "description": "Early-spring sejak leaf from a small Hadong farm. Brewed by the pot, three pours.", "dietary": ["vegan", "GF", "DF"], "spice": null},
+      {"name": "Boricha", "price": "$4.00", "description": "Roasted barley tea, served warm or iced. Free with every table; this is the refill pot.", "dietary": ["vegan", "GF", "DF"], "spice": null, "note": "Complimentary with any meal."},
+      {"name": "Yuja Honey Tea", "price": "$6.00", "description": "Slow citron-honey marmalade, ginger root, hot water. The cold-weather pour.", "dietary": ["vegetarian", "GF", "DF"], "spice": null},
+      {"name": "Insam (Ginseng) Tea", "price": "$8.00", "description": "Korean white ginseng, slow-brewed, mild bitter finish.", "dietary": ["vegan", "GF", "DF"], "spice": null}
+    ],
+    "banchan_and_starters": [
+      {"name": "Kimchi Trio", "price": "$9.00", "description": "Napa, radish (kkakdugi), and cucumber (oi-sobagi) — fermented in-house.", "dietary": ["vegan", "GF", "DF"], "spice": "medium"},
+      {"name": "Haemul Pajeon", "price": "$13.00", "description": "Crisp scallion-and-seafood pancake, soy-vinegar dipping sauce.", "dietary": [], "spice": "mild", "chef_pick": true, "allergens": ["wheat", "shellfish", "egg"]},
+      {"name": "Mandu (Beef & Chive)", "price": "$12.00", "description": "Pan-seared half-moon dumplings, ginger-soy, sesame.", "dietary": ["DF"], "spice": null, "allergens": ["wheat", "sesame"]},
+      {"name": "Japchae", "price": "$13.00", "description": "Sweet-potato glass noodles tossed with beef, mushroom, julienne vegetables, sesame oil.", "dietary": ["DF"], "spice": null, "allergens": ["soy", "sesame"], "modifier": {"name": "protein swap", "options": ["beef (default)", "tofu", "no protein"]}}
+    ],
+    "mains": [
+      {"name": "Bibimbap (Stone Bowl)", "price_lunch": "$14.00", "price_dinner": "$16.00", "description": "Crispy-rice dolsot, seasonal vegetables, gochujang, fried egg. Add bulgogi or tofu.", "dietary": ["vegetarian", "GF"], "spice": "mild", "modifier": {"name": "protein add", "options": ["bulgogi (+$5)", "tofu (+$3)", "no add"]}},
+      {"name": "Bulgogi", "price": "$19.00", "description": "Soy-pear marinated rib-eye, grilled to order, lettuce wraps, jasmine rice.", "dietary": ["DF"], "spice": "mild", "chef_pick": true, "allergens": ["soy", "sesame"]},
+      {"name": "Kimchi Jjigae", "price": "$17.00", "description": "Aged kimchi stew, pork belly, soft tofu, served bubbling with rice.", "dietary": ["DF"], "spice": "hot", "allergens": ["soy"]},
+      {"name": "Galbi-jjim", "price_half": "$14.00", "price_full": "$24.00", "description": "Beef short rib braised in soy-mirin with daikon, jujube, and chestnut.", "dietary": ["DF"], "spice": "mild", "allergens": ["soy", "tree nuts (chestnut)"], "modifier": {"name": "portion size", "options": ["half ($14)", "full ($24)"]}}
+    ],
+    "sweets": [
+      {"name": "Pine-Nut Hotteok", "price": "$7.00", "description": "Sweet pancake stuffed with brown sugar, cinnamon, and toasted pine nuts.", "dietary": ["vegetarian"], "spice": null, "allergens": ["wheat", "tree nuts (pine nuts)"]}
+    ]
+  },
+  "policies": {
+    "reservations": "We hold tables for parties of four or more. For smaller parties we keep a no-wait waitlist via text — give us your number when you arrive.",
+    "walkins": "Always welcome. Bar seating is first-come.",
+    "large_parties": "Parties of 8 or more — call ahead at least 24 hours; 18% gratuity included on parties of 8+.",
+    "private_events": "Full buyout available Mondays (our normal closed day) and Sunday evenings after 7pm. Minimums apply; ask for the events sheet by email.",
+    "cancellation": "We charge a $10/person no-show fee on reservations of 6+. Cancel by 4pm same day to avoid.",
+    "takeout": "Order online at our website or call us. Pickup window typically 20–30 minutes.",
+    "delivery": "Available via DoorDash only. We don't deliver directly.",
+    "dietary": "Korean food does dietary range better than most cuisines. Every dish is flagged for vegan, gluten-free, dairy-free, and heat. Most dishes can be modified — ask.",
+    "kids": "We have a kids' menu with rice, mild bulgogi, and chicken katsu. High chairs and boosters available.",
+    "dress_code": "Casual. Come as you are.",
+    "alcohol": "Beer and soju only. We don't serve liquor or wine.",
+    "wifi": "Yes — network 'HearthGuest', no password.",
+    "pets": "Service animals only inside. Patio is dog-friendly in season."
+  },
+  "faq": [
+    {"q": "Are you open today?", "a": "Refer to hours; remember Mondays we're closed."},
+    {"q": "Do you take reservations?", "a": "Yes for parties of 4+. Smaller parties via text waitlist on arrival."},
+    {"q": "How spicy is your food?", "a": "Most dishes are mild to medium. Kimchi Jjigae is genuinely hot. We can adjust spice on most dishes — just ask when ordering."},
+    {"q": "Do you have vegan options?", "a": "Yes. Several teas, the kimchi trio, japchae with tofu, and bibimbap with tofu are all vegan-friendly."},
+    {"q": "What's the Banchan Bar?", "a": "All-you-can-eat lunch, $24/person, Tuesday through Sunday from 11 to 2. Ten rotating banchan, two carved mains, rice, kimchi, and tea included. Dine-in only."},
+    {"q": "Do you cater?", "a": "Yes — call us 48 hours ahead. Minimum order $200, delivery within Polk County."},
+    {"q": "Where do I park?", "a": "Two-hour metered street parking on Locust. Free public ramp on 4th and Walnut after 5pm and weekends."},
+    {"q": "Can I order online?", "a": "Yes — at our website, or DoorDash for delivery."}
+  ],
+  "escalation_rules": {
+    "transfer_to_human_when": [
+      "Caller asks for the manager or owner.",
+      "Caller is reporting an issue with a previous order.",
+      "Caller is press, media, or a vendor.",
+      "Caller asks about employment or job openings.",
+      "Caller is intoxicated, abusive, or asking off-topic questions repeatedly.",
+      "Caller asks a question Vox cannot confidently answer from this knowledge base."
+    ],
+    "transfer_message": "Let me get a team member on the line for you. One moment please.",
+    "transfer_destination": "(515) 555-0100 ext. 2"
+  },
+  "voice_persona": {
+    "name": "Vox",
+    "introduction": "Thanks for calling Hearth and Pass — this is Vox. How can I help you today?",
+    "tone": "Warm, unhurried, hospitality-trained. Confident with menu knowledge. Korean dish names pronounced respectfully — Vox should attempt accurate pronunciation but is not pretending to be a native speaker.",
+    "do": [
+      "Greet warmly with the restaurant name in the first sentence.",
+      "Confirm orders back to the caller before sending to the kitchen.",
+      "Quote prices clearly when ordering.",
+      "Suggest the chef's picks (Haemul Pajeon, Bulgogi) when caller asks for recommendations.",
+      "Mention the Banchan Bar when caller asks about lunch."
+    ],
+    "do_not": [
+      "Never invent menu items, prices, or hours.",
+      "Never accept payment over the phone.",
+      "Never share owner/staff personal contact information.",
+      "Never make medical or allergy guarantees beyond reading the published allergen list."
+    ]
+  }
+}

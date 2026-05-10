@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #faf6ef;
+  color: #1f1c1a;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling for backstage panels (dark theme) */
+.scrollbar-dark::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-dark::-webkit-scrollbar-thumb {
+  background: #2a3447;
+  border-radius: 3px;
+}
+.scrollbar-dark::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-light::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-light::-webkit-scrollbar-thumb {
+  background: #d8cdb8;
+  border-radius: 3px;
+}
+.scrollbar-light::-webkit-scrollbar-track {
+  background: transparent;
+}
