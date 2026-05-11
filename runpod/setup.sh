@@ -166,12 +166,26 @@ pip install --quiet rustymimi
 echo ""
 echo "==> Realigning torchaudio + torchvision to installed torch ..."
 INSTALLED_TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
+TORCH_MM=$(echo "${INSTALLED_TORCH}" | cut -d. -f1-2)
+# torchvision's minor offset from torch is +15 (torch 2.9 → torchvision 0.24).
+# This convention has held since torch 1.0.
+TORCH_MIN=$(echo "${INSTALLED_TORCH}" | cut -d. -f2)
+TV_MIN=$((TORCH_MIN + 15))
+TV_MIN_NEXT=$((TV_MIN + 1))
+TORCH_MIN_NEXT=$((TORCH_MIN + 1))
+
+echo "    torch is at ${INSTALLED_TORCH} — pinning audio to ${TORCH_MM}.x and vision to 0.${TV_MIN}.x"
+PIP_ARGS=(
+  --upgrade --force-reinstall
+  "torch==${INSTALLED_TORCH}"
+  "torchaudio>=${TORCH_MM},<2.${TORCH_MIN_NEXT}"
+  "torchvision>=0.${TV_MIN},<0.${TV_MIN_NEXT}"
+)
 if [ -n "${CUDA_INDEX_URL}" ]; then
-  echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from ${CUDA_INDEX_URL}"
-  pip install --upgrade --index-url "${CUDA_INDEX_URL}" "torch==${INSTALLED_TORCH}" torchaudio torchvision
+  echo "    using PyTorch wheel index: ${CUDA_INDEX_URL}"
+  pip install --index-url "${CUDA_INDEX_URL}" "${PIP_ARGS[@]}"
 else
-  echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from PyPI (default)"
-  pip install --upgrade "torch==${INSTALLED_TORCH}" torchaudio torchvision
+  pip install "${PIP_ARGS[@]}"
 fi
 
 python - <<'PY'
