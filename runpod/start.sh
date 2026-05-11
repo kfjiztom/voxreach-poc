@@ -77,6 +77,10 @@ fi
 
 echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
+# Default persona prompt — auto-loaded when the client sends empty text_prompt.
+# Requires the server.py patch applied by setup.sh (see runpod/patches/).
+DEFAULT_PROMPT_FILE="${DEFAULT_PROMPT_FILE:-${POC_DIR}/persona/vox_personaplex_prompt.txt}"
+
 # Window 1: PersonaPlex full-duplex speech server
 tmux new-session -d -s "${SESSION}" -n personaplex "
   source ${PP_VENV}/bin/activate;
@@ -85,6 +89,8 @@ tmux new-session -d -s "${SESSION}" -n personaplex "
   export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
   export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
   export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN};
+  export MOSHI_DEFAULT_TEXT_PROMPT_FILE=${DEFAULT_PROMPT_FILE};
+  echo '[personaplex] default prompt: ${DEFAULT_PROMPT_FILE}';
   echo '[personaplex] starting on :${PERSONAPLEX_PORT}';
   python -m moshi.server --host 0.0.0.0 --port ${PERSONAPLEX_PORT}
 "

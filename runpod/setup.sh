@@ -145,6 +145,14 @@ echo "==> Installing NVIDIA moshi fork from ${PERSONAPLEX_REPO}/moshi ..."
 (cd "${PERSONAPLEX_REPO}" && pip install --quiet "moshi/.")
 pip install --quiet huggingface_hub hf_transfer accelerate
 
+# Apply VoxReach patches (idempotent) — adds server-side default text prompt
+echo "==> Applying VoxReach patches to moshi/server.py ..."
+SERVER_PY=$(ls "${PP_VENV}"/lib/python*/site-packages/moshi/server.py 2>/dev/null | head -1)
+if [ -n "${SERVER_PY}" ]; then
+  python "${POC_DIR}/runpod/patches/inject_default_prompt.py" "${SERVER_PY}" || \
+    echo "    (patch failed — server will work, but the default-prompt feature won't activate)"
+fi
+
 # Quick CUDA sanity — fail fast if torch can't talk to the GPU
 python - <<'PY'
 import torch
