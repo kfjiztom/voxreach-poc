@@ -8,11 +8,20 @@ The whole demo runs on a single RunPod GPU pod. The frontend can also be develop
 |---|---|---|
 | GPU | **A100 80GB PCIe** (or **H100 80GB**) | 80 GB is the floor — Moshi-RAG ~16 GB + Gemma-3-12B retrieval LLM ~24 GB + headroom |
 | Template | RunPod `PyTorch 2.4.0 · py3.12 · cuda 12.4` | Or any image with CUDA 12.x + Python ≥ 3.10 |
-| Disk | 80 GB container, 80 GB volume | Moshi weights ~14 GB + Gemma-3-12B ~24 GB + pip caches |
+| Container disk | 20 GB (RunPod default — fine, **do not raise**) | Holds the OS + base PyTorch only; weights go on the network volume below |
+| **Network volume** | **80 GB**, attached at `/workspace` | Persists across pod destruction; survives spot interruptions |
 | Exposed ports | `8998` (Moshi), `8001` (sidecar), `3001` (web) | RunPod will assign public proxied URLs |
 | Env | `HF_TOKEN=hf_...` | Set in the pod's secrets, do not bake into the image |
+| SSH | Enabled | Required for the bring-up |
 
-Region: pick one with A100 80GB spot availability — `us-central` or `eu-romania` usually best. Spot is fine for the POC; an interruption mid-demo just means re-running the bring-up script.
+Region: pick one with A100 80GB spot availability AND network-volume support — `us-ks-2`, `us-ca-2`, or `eu-ro-1` usually green in 2026. Spot is fine for development; switch to on-demand for live investor calls.
+
+> **Critical:** RunPod's container disk is 20 GB and **ephemeral**. The HF + pip caches default to `~/.cache/X` which lives on that disk. Without redirecting them to `/workspace`, the 38 GB model-weight download fills the container disk halfway through and fails with `no space left on device`. The `setup.sh` script handles this redirect automatically — but if you ever run `pip install` or `huggingface-cli download` outside the script, **first** run:
+>
+> ```bash
+> export HF_HOME=/workspace/.cache/huggingface
+> export PIP_CACHE_DIR=/workspace/.cache/pip
+> ```
 
 ## 2. One-time setup (per pod)
 
@@ -28,14 +37,28 @@ bash runpod/setup.sh
 ```
 
 The setup script will:
-- `apt install libopus-dev ffmpeg`
-- Create `/workspace/voxreach-poc/poc/.venv` and install Python deps
+- **Redirect HF + pip caches to `/workspace`** so they don't fill the 20 GB container disk
+- **Persist those env vars to `~/.bashrc`** so future shells inherit them
+- **Symlink** `/root/.cache/{huggingface,pip}` → `/workspace/.cache/{huggingface,pip}` for tools that ignore env vars
+- `apt install libopus-dev ffmpeg tmux jq curl git` and clean apt cache
+- **Upgrade pip** (RunPod base images often ship a 2024-era pip with vulnerability warnings)
+- Create `poc/sidecar/.venv` and install Python deps (FastAPI, uvicorn, sse-starlette, etc.)
 - Clone `kyutai-labs/moshi-rag` into `/workspace/moshi-rag`
-- Run `huggingface-cli login` if `$HF_TOKEN` is not already set in the env
-- Pre-download `kyutai/moshika-rag-pytorch-bf16` and `google/gemma-3-12b-it` weights
+- `pip install` moshi-rag (which pulls torch 2.9.x as a transitive dep)
+- **Realign torchaudio + torchvision** to match the now-installed torch — without this, the pre-baked torchaudio 2.4.1 silently fails at runtime
+- Install vLLM
+- Pre-download `kyutai/moshika-rag-pytorch-bf16` and `google/gemma-3-12b-it` weights to `/workspace/.cache/huggingface` (~38 GB)
 - Install Node 20 + run `npm ci` for the web app
+- Print final `df -h` so you can confirm `/` stayed small and `/workspace` got the bytes
 
 Expect 15–25 minutes for first-run weight downloads.
+
+If your pod has a CUDA driver newer than 12.4 (e.g. cu126, cu128, cu130), override the wheel index before running:
+
+```bash
+export CUDA_INDEX_URL=https://download.pytorch.org/whl/cu128   # or cu126, cu130
+bash runpod/setup.sh
+```
 
 ## 3. Start the stack
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # RunPod one-time setup for the VoxReach POC.
 # Run from /workspace/voxreach-poc/poc after cloning the repo.
+#
+# Critical: RunPod's container disk is only 20 GB. The HF + pip caches default
+# to ~/.cache/X which lives on that disk. Without redirecting them to the
+# network volume at /workspace, the model weight downloads will run out of
+# space mid-stream. This script handles that automatically.
 
 set -euo pipefail
 
@@ -8,9 +13,50 @@ POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE="$(cd "${POC_DIR}/../.." && pwd)"
 MOSHI_DIR="${WORKSPACE}/moshi-rag"
 
+# CUDA wheel index for the torch/torchaudio/torchvision realignment step.
+# Override if your pod's CUDA driver is on a different family (cu126, cu128, cu130).
+CUDA_INDEX_URL="${CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+
 echo "==> POC dir:        ${POC_DIR}"
 echo "==> Workspace dir:  ${WORKSPACE}"
 echo "==> Moshi-RAG dir:  ${MOSHI_DIR}"
+echo "==> CUDA wheel idx: ${CUDA_INDEX_URL}"
+
+# ---------------------------------------------------------------------------
+# Cache redirect: keep big caches on /workspace, NOT on the 20 GB container disk.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Redirecting HF + pip caches to /workspace ..."
+export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/workspace/.cache/pip}"
+mkdir -p "${HF_HOME}" "${PIP_CACHE_DIR}"
+
+# Move any existing caches off the container disk
+mkdir -p /root/.cache
+for sub in huggingface pip; do
+  src="/root/.cache/${sub}"
+  dst="/workspace/.cache/${sub}"
+  if [ -d "${src}" ] && [ ! -L "${src}" ]; then
+    echo "    moving ${src} → ${dst}"
+    cp -a "${src}/." "${dst}/" 2>/dev/null || true
+    rm -rf "${src}"
+  fi
+  ln -sfn "${dst}" "${src}"
+done
+
+# Persist for every future shell on this pod
+if ! grep -q 'VoxReach POC cache redirects' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<'EOF'
+
+# VoxReach POC cache redirects — keep big caches off the 20 GB container disk
+export HF_HOME=/workspace/.cache/huggingface
+export HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface
+export TRANSFORMERS_CACHE=/workspace/.cache/huggingface
+export PIP_CACHE_DIR=/workspace/.cache/pip
+EOF
+fi
 
 # ---------------------------------------------------------------------------
 # System packages
@@ -19,6 +65,8 @@ echo ""
 echo "==> Installing system packages (opus, ffmpeg, tmux, jq) ..."
 apt-get update -qq
 apt-get install -y -qq libopus-dev ffmpeg tmux jq curl git
+apt-get clean
+rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
 # HF auth check
@@ -34,6 +82,13 @@ if [ -z "${HF_TOKEN:-}" ]; then
 fi
 export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 echo "==> HF_TOKEN is set (length=${#HF_TOKEN})"
+
+# ---------------------------------------------------------------------------
+# Upgrade pip globally — base RunPod images often ship with pip from 2024.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Upgrading pip ..."
+python3 -m pip install --quiet --upgrade pip
 
 # ---------------------------------------------------------------------------
 # Python venv + sidecar deps
@@ -70,6 +125,26 @@ pip install --quiet -U "git+https://github.com/kyutai-labs/moshi-rag.git#egg=mos
 pip install --quiet rustymimi
 
 # ---------------------------------------------------------------------------
+# Realign torchaudio + torchvision to whatever torch moshi-rag pulled in.
+# Without this you get a runtime error: torchaudio pinned to torch 2.4.1 but
+# torch is now 2.9.x.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Realigning torchaudio + torchvision to installed torch ..."
+INSTALLED_TORCH=$(python3 -c "import torch; print(torch.__version__.split('+')[0])")
+echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from ${CUDA_INDEX_URL}"
+pip install --quiet --upgrade --index-url "${CUDA_INDEX_URL}" torchaudio torchvision
+
+python3 - <<'PY'
+import torch, torchaudio, torchvision
+print(f"   torch       {torch.__version__}")
+print(f"   torchaudio  {torchaudio.__version__}")
+print(f"   torchvision {torchvision.__version__}")
+print(f"   cuda        {torch.cuda.is_available()}")
+assert torch.cuda.is_available(), "CUDA not available — check pod GPU and CUDA_INDEX_URL"
+PY
+
+# ---------------------------------------------------------------------------
 # vLLM (retrieval backend)
 # ---------------------------------------------------------------------------
 echo ""
@@ -80,7 +155,7 @@ pip install --quiet "vllm>=0.6.4"
 # Pre-pull weights (so first start.sh is fast)
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Pre-downloading model weights (this is the long step) ..."
+echo "==> Pre-downloading model weights to ${HF_HOME} (this is the long step) ..."
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
@@ -109,5 +184,8 @@ cd "${POC_DIR}/web"
 npm ci --silent
 
 # ---------------------------------------------------------------------------
+echo ""
+echo "==> Disk usage after setup:"
+df -h / /workspace 2>/dev/null | grep -E 'Filesystem|/$|/workspace'
 echo ""
 echo "==> Setup complete. Next: bash runpod/start.sh"
