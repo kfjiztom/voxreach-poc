@@ -158,6 +158,9 @@ export function useCallState() {
     for (const name of events) {
       es.addEventListener(name, (ev) => handle(ev as MessageEvent, name));
     }
+    // Heartbeat from the server's HTTP/2-keepalive flush — silently absorb,
+    // never dispatch (avoids "unknown event 'ready'" console noise).
+    es.addEventListener("ready", () => {});
 
     es.onerror = (err) => {
       console.warn("SSE connection error", err);

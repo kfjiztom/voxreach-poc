@@ -188,6 +188,9 @@ async def events():
     queue = store.subscribe()
 
     async def gen():
+        # Initial flush so HTTP/2 proxies (RunPod, Cloudflare) see the stream
+        # immediately and don't kill the connection as malformed.
+        yield {"event": "ready", "data": "{}"}
         try:
             # Hydrate new subscriber with current snapshot
             if store.current:
@@ -200,7 +203,19 @@ async def events():
         finally:
             store.unsubscribe(queue)
 
-    return EventSourceResponse(gen())
+    # ping=15 sends a `: ping\n\n` comment every 15s. This is what keeps the
+    # connection alive across HTTP/2 proxies; without it RunPod/Cloudflare
+    # treat the silent stream as a protocol violation and return
+    # ERR_HTTP2_PROTOCOL_ERROR to the browser within ~30s.
+    return EventSourceResponse(
+        gen(),
+        ping=15,
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # disable nginx buffering, just in case
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.post("/api/mock/play")
