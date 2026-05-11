@@ -22,13 +22,8 @@ if [ ! -d "${WORKSPACE}" ]; then
 fi
 
 # CUDA wheel index for the torch/torchaudio/torchvision realignment step.
-# By default we DON'T set one — PyPI's torch wheels for linux_x86_64 already
-# bundle CUDA via nvidia-* dependencies and pip will resolve a consistent
-# torch + torchaudio + torchvision family (currently 2.9.x).
-#
-# Set to a specific PyTorch wheel index (e.g. https://download.pytorch.org/whl/cu128)
-# only if your pod has unusual CUDA driver constraints. The cu124 index is
-# stuck on torch 2.6 and will DOWNGRADE moshi-rag's torch 2.9.1 — do not use it.
+# Auto-detected from the pod's NVIDIA driver below — see "Auto-detect CUDA"
+# section. Set CUDA_INDEX_URL explicitly to override the auto-detection.
 CUDA_INDEX_URL="${CUDA_INDEX_URL:-}"
 
 echo "==> POC dir:        ${POC_DIR}"
@@ -165,12 +160,31 @@ pip install --quiet rustymimi
 # Without this you get a runtime error: torchaudio pinned to torch 2.4.1 but
 # torch is now 2.9.x.
 # ---------------------------------------------------------------------------
+# Auto-detect CUDA wheel index from driver capability. PyPI's default torch
+# wheel may be built for a CUDA version newer than the pod's driver supports
+# (e.g. PyPI torch 2.9 → CUDA 13, but RunPod PyTorch 2.4 template → driver
+# CUDA 12.8). Use the closest cu1XX index ≤ driver's max CUDA.
+if [ -z "${CUDA_INDEX_URL}" ]; then
+  DRV_CUDA=$(nvidia-smi 2>/dev/null | grep -oE "CUDA Version: [0-9]+\.[0-9]+" | awk '{print $3}')
+  if [ -n "${DRV_CUDA}" ]; then
+    DRV_MAJ=$(echo "${DRV_CUDA}" | cut -d. -f1)
+    DRV_MIN=$(echo "${DRV_CUDA}" | cut -d. -f2)
+    case "${DRV_MAJ}.${DRV_MIN}" in
+      13.*)  CUDA_INDEX_URL="https://download.pytorch.org/whl/cu130" ;;
+      12.8|12.9) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu128" ;;
+      12.6|12.7) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu126" ;;
+      12.4|12.5) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124" ;;
+      *)     CUDA_INDEX_URL="" ;;  # unknown — let pip default
+    esac
+    echo "==> Detected driver CUDA ${DRV_CUDA} → using wheel index: ${CUDA_INDEX_URL:-PyPI default}"
+  fi
+fi
+
 echo ""
 echo "==> Realigning torchaudio + torchvision to installed torch ..."
 INSTALLED_TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
 TORCH_MM=$(echo "${INSTALLED_TORCH}" | cut -d. -f1-2)
 # torchvision's minor offset from torch is +15 (torch 2.9 → torchvision 0.24).
-# This convention has held since torch 1.0.
 TORCH_MIN=$(echo "${INSTALLED_TORCH}" | cut -d. -f2)
 TV_MIN=$((TORCH_MIN + 15))
 TV_MIN_NEXT=$((TV_MIN + 1))
@@ -189,6 +203,15 @@ if [ -n "${CUDA_INDEX_URL}" ]; then
 else
   pip install "${PIP_ARGS[@]}"
 fi
+
+# Sanity check CUDA actually works (would catch wrong wheel index)
+python - <<'PY'
+import torch
+if not torch.cuda.is_available():
+    raise SystemExit("ERROR: torch.cuda.is_available() is False after install — wrong CUDA wheel index?")
+print(f"   torch       {torch.__version__}")
+print(f"   cuda        OK ({torch.cuda.get_device_name(0)})")
+PY
 
 python - <<'PY'
 import torch, torchaudio, torchvision
