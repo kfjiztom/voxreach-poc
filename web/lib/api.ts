@@ -22,7 +22,9 @@ export async function endCall(): Promise<unknown> {
   return r.json();
 }
 
-export async function playMockScenario(scenario: "order" | "info" | "escalate"): Promise<void> {
+export async function playMockScenario(
+  scenario: "order" | "info" | "escalate" | "modify",
+): Promise<void> {
   const r = await post(`/mock/play?scenario=${scenario}`);
   if (!r.ok) throw new Error(`playMockScenario failed: ${r.status}`);
 }

@@ -27,6 +27,8 @@ def _toast_payload(order: OrderTicket) -> dict:
         "guestName": order.customer_name or "Phone Guest",
         "guestPhone": order.customer_phone,
         "promisedDate": order.pickup_time,
+        # Only ACTIVE items go to the POS — removed items stay in the conversation
+        # transcript for debugging but never become real kitchen tickets.
         "selections": [
             {
                 "displayName": item.name,
@@ -35,7 +37,7 @@ def _toast_payload(order: OrderTicket) -> dict:
                 "lineTotal": item.line_total_cents / 100,
                 "modifiers": [{"name": item.modifier}] if item.modifier else [],
             }
-            for item in order.items
+            for item in order.active_items
         ],
         "subtotal": order.subtotal_cents / 100,
         "source": {"name": "VoxReach", "callId": order.call_id},

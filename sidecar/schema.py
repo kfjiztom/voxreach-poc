@@ -15,12 +15,20 @@ class TranscriptTurn(BaseModel):
     latency_ms: int | None = None
 
 
+# ---------------------------------------------------------------------------
+# Order — three states an item can be in during a conversation
+# ---------------------------------------------------------------------------
+
+ItemStatus = Literal["pending", "confirmed", "removed"]
+
+
 class OrderItem(BaseModel):
     name: str
     quantity: int = 1
     unit_price_cents: int
     modifier: str | None = None
     line_total_cents: int
+    status: ItemStatus = "pending"  # set to "confirmed" once Vox reads it back
 
     @property
     def display_price(self) -> str:
@@ -28,7 +36,13 @@ class OrderItem(BaseModel):
 
 
 class OrderTicket(BaseModel):
-    """The structured order that would be written to the POS."""
+    """The structured order that would be written to the POS.
+
+    Items list includes ALL items ever mentioned (including removed ones, with
+    status='removed'). The web UI strikes through removed items for the demo
+    moment. The subtotal property counts only non-removed items so the
+    POS-write JSON is correct.
+    """
 
     call_id: str
     restaurant: str = "Hearth & Pass"
@@ -41,16 +55,79 @@ class OrderTicket(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     @property
+    def active_items(self) -> list[OrderItem]:
+        return [i for i in self.items if i.status != "removed"]
+
+    @property
     def subtotal_cents(self) -> int:
-        return sum(item.line_total_cents for item in self.items)
+        return sum(item.line_total_cents for item in self.active_items)
 
     @property
     def display_subtotal(self) -> str:
         return f"${self.subtotal_cents / 100:.2f}"
 
 
+# ---------------------------------------------------------------------------
+# Order extraction — what the LLM returns each turn
+# ---------------------------------------------------------------------------
+
+
+class ExtractedItem(BaseModel):
+    """One item as currently understood from the rolling transcript.
+
+    The LLM returns the COMPLETE current state every turn, not deltas.
+    The sidecar diffs against the previous state to emit granular events.
+    """
+
+    name: str  # must match a menu item name exactly
+    quantity: int = 1
+    modifier: str | None = None
+    confirmed: bool = False  # true once Vox has read this item back to the caller
+
+
+class OrderExtractionResult(BaseModel):
+    """Full extraction result from the LLM for one turn."""
+
+    items: list[ExtractedItem] = Field(default_factory=list)
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    pickup_time: str | None = None
+    notes: str | None = None
+    caller_finished: bool = False  # true if the caller has indicated they're done ordering
+
+
+class OrderDiff(BaseModel):
+    """The delta computed by diffing two consecutive extraction results.
+
+    Each diff produces zero-or-more granular events that the UI animates:
+      - added: new item appeared
+      - removed: item from previous state is gone (customer cancelled)
+      - quantity_changed: same item, different qty
+      - modifier_changed: same item, different modifier
+      - confirmed: item flipped from pending → confirmed
+    """
+
+    added: list[ExtractedItem] = Field(default_factory=list)
+    removed: list[ExtractedItem] = Field(default_factory=list)
+    quantity_changed: list[tuple[str, int, int]] = Field(default_factory=list)  # (name, old, new)
+    modifier_changed: list[tuple[str, str | None, str | None]] = Field(default_factory=list)
+    confirmed: list[str] = Field(default_factory=list)  # item names newly confirmed
+
+    @property
+    def is_empty(self) -> bool:
+        return not any([
+            self.added, self.removed, self.quantity_changed,
+            self.modifier_changed, self.confirmed,
+        ])
+
+
+# ---------------------------------------------------------------------------
+# Retrieval + latency (mostly unchanged)
+# ---------------------------------------------------------------------------
+
+
 class RetrievalHit(BaseModel):
-    """One knowledge-base item the RAG layer pulled in to ground a response."""
+    """One knowledge-base item used to ground a response."""
 
     path: str  # e.g. "menu.mains.bulgogi"
     snippet: str
@@ -64,6 +141,12 @@ class LatencyMetric(BaseModel):
     avg_turn_ms: int | None = None
     rag_hits: int = 0
     asr_confidence: float | None = None
+    extraction_latency_ms: int | None = None  # how long the LLM extractor took
+
+
+# ---------------------------------------------------------------------------
+# Call state + SSE event envelope
+# ---------------------------------------------------------------------------
 
 
 class CallState(BaseModel):
@@ -86,6 +169,10 @@ class SSEEvent(BaseModel):
         "call_ended",
         "transcript_turn",
         "order_updated",
+        "item_added",
+        "item_removed",
+        "item_modified",
+        "item_confirmed",
         "retrieval_hit",
         "latency_updated",
         "pos_write",

@@ -61,6 +61,20 @@ if ss -tlnp 2>/dev/null | grep -E ":${SIDECAR_PORT}|:${WEB_PORT}" | grep -q ngin
   sleep 1
 fi
 
+# Start Ollama in the background if it's installed (powers the order extractor).
+# Without Ollama, the sidecar falls back to the rule-based extractor (append-only).
+if command -v ollama >/dev/null 2>&1; then
+  if ! pgrep -x ollama >/dev/null; then
+    echo "==> Starting Ollama daemon in the background ..."
+    nohup ollama serve > /tmp/ollama.log 2>&1 &
+    sleep 2
+  fi
+  echo "==> Ollama: $(ollama --version 2>&1 | head -1)"
+else
+  echo "==> Ollama not installed — sidecar will use rule-based extractor (no cancel/modify support)."
+  echo "    Run bash runpod/setup_ollama.sh to enable LLM-based extraction."
+fi
+
 echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
 # Window 1: PersonaPlex full-duplex speech server
@@ -79,6 +93,9 @@ tmux new-session -d -s "${SESSION}" -n personaplex "
 tmux new-window -t "${SESSION}" -n sidecar "
   cd ${POC_DIR}/sidecar;
   echo '[sidecar] starting on :${SIDECAR_PORT}';
+  export OLLAMA_URL=\${OLLAMA_URL:-http://localhost:11434/v1};
+  export VOXREACH_ORDER_MODEL=\${VOXREACH_ORDER_MODEL:-gemma2:9b};
+  export VOXREACH_EXTRACTOR=\${VOXREACH_EXTRACTOR:-auto};
   SIDECAR_PORT=${SIDECAR_PORT} bash run.sh
 "
 

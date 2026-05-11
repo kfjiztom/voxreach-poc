@@ -3,15 +3,20 @@
 Each scenario is a sequence of (delay_ms, kind, payload) tuples. Kinds:
   - "transcript": payload = (role, text, latency_ms_or_None)
   - "retrieval":  payload = (path, snippet, score)
+
+Mock playback now routes each transcript turn through the same order
+extraction pipeline that real audio uses (order_extractor.get_extractor()),
+so cancel/modify scenarios faithfully simulate the production flow.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
-from intent import update_order_from_turn
+from order_extractor import get_extractor
 from schema import RetrievalHit, SSEEvent, TranscriptTurn
 from state import store
 
@@ -53,6 +58,23 @@ SCENARIOS: dict[str, list[tuple[int, str, Any]]] = {
         (1500, "transcript", ("customer", "Yeah, I had a really bad experience here last night. Can I speak to the manager?", None)),
         (700, "transcript", ("vox", "I'm sorry to hear that. Let me get a team member on the line for you — one moment please.", 320)),
     ],
+    # NEW: shows the cancel/modify path — the real moat moment for VoxReach
+    "modify": [
+        (300, "transcript", ("vox", "Thanks for calling Hearth and Pass — this is Vox. How can I help you today?", 280)),
+        (1500, "transcript", ("customer", "Can I order one bulgogi for pickup?", None)),
+        (50, "retrieval", ("menu.mains.bulgogi", "Bulgogi $19 — chef's pick. Soy-pear marinated rib-eye.", 0.95)),
+        (600, "transcript", ("vox", "One bulgogi at nineteen dollars. Anything else?", 320)),
+        (1700, "transcript", ("customer", "Actually, scratch the bulgogi. Make it two haemul pajeon instead.", None)),
+        (50, "retrieval", ("menu.banchan.haemul_pajeon", "Haemul Pajeon $13 — chef's pick.", 0.92)),
+        (700, "transcript", ("vox", "Got it — taking the bulgogi off, two haemul pajeon at thirteen each. That's twenty-six dollars before tax.", 350)),
+        (1500, "transcript", ("customer", "Perfect. And actually, can I get a kimchi jjigae too?", None)),
+        (50, "retrieval", ("menu.mains.kimchi_jjigae", "Kimchi Jjigae $17 — hot.", 0.93)),
+        (650, "transcript", ("vox", "Sure — adding kimchi jjigae at seventeen. So that's two pajeon and one kimchi jjigae, forty-three dollars before tax.", 360)),
+        (1300, "transcript", ("customer", "Six PM pickup, under Sam, 515-555-0199.", None)),
+        (700, "transcript", ("vox", "Six PM, under Sam, five-one-five five-five-five oh-one-nine-nine. Confirming: two haemul pajeon, one kimchi jjigae, forty-three before tax, ready at six. See you then.", 400)),
+        (1100, "transcript", ("customer", "Thanks!", None)),
+        (450, "transcript", ("vox", "Thanks Sam — see you at six.", 280)),
+    ],
 }
 
 
@@ -62,7 +84,9 @@ async def play_mock_call(scenario: str) -> None:
         return
 
     state = await store.start_call()
-    log.info("mock call started call_id=%s scenario=%s", state.call_id, scenario)
+    extractor = get_extractor()
+    log.info("mock call started call_id=%s scenario=%s extractor=%s",
+             state.call_id, scenario, type(extractor).__name__)
 
     for delay_ms, kind, payload in SCENARIOS[scenario]:
         await asyncio.sleep(delay_ms / 1000)
@@ -77,14 +101,12 @@ async def play_mock_call(scenario: str) -> None:
             live.transcript.append(turn)
             await store.publish(SSEEvent(event="transcript_turn", data=turn.model_dump(mode="json")))
 
-            live.order, changes = update_order_from_turn(live.order, text, role)
-            if changes:
-                await store.publish(
-                    SSEEvent(
-                        event="order_updated",
-                        data={"order": live.order.model_dump(mode="json"), "changes": changes},
-                    )
-                )
+            # Run extraction on the full rolling transcript and apply diff events
+            t0 = time.perf_counter()
+            extraction = await asyncio.to_thread(extractor.extract, list(live.transcript))
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            live.latency.extraction_latency_ms = elapsed_ms
+            await store.apply_extraction(extraction)
 
             if latency is not None:
                 if live.latency.first_audio_ms is None:
@@ -92,7 +114,7 @@ async def play_mock_call(scenario: str) -> None:
                 live.latency.last_turn_ms = latency
                 prior = live.latency.avg_turn_ms or latency
                 live.latency.avg_turn_ms = int((prior + latency) / 2)
-                await store.publish(SSEEvent(event="latency_updated", data=live.latency.model_dump()))
+            await store.publish(SSEEvent(event="latency_updated", data=live.latency.model_dump()))
 
         elif kind == "retrieval":
             path, snippet, score = payload
@@ -105,7 +127,7 @@ async def play_mock_call(scenario: str) -> None:
     # End the call automatically after the scenario completes
     await asyncio.sleep(0.8)
     final = await store.end_call()
-    if final and final.order.items:
+    if final and final.order.active_items:
         from pos_stub import write_order
         await store.publish(SSEEvent(event="pos_write", data={"status": "writing"}))
         try:

@@ -3,6 +3,7 @@
 export type CallStatus = "idle" | "ringing" | "connected" | "ended";
 export type Role = "customer" | "vox";
 export type PosWriteStatus = "pending" | "writing" | "written" | "failed";
+export type ItemStatus = "pending" | "confirmed" | "removed";
 
 export interface TranscriptTurn {
   role: Role;
@@ -17,6 +18,7 @@ export interface OrderItem {
   unit_price_cents: number;
   modifier: string | null;
   line_total_cents: number;
+  status: ItemStatus;
 }
 
 export interface OrderTicket {
@@ -44,6 +46,7 @@ export interface LatencyMetric {
   avg_turn_ms: number | null;
   rag_hits: number;
   asr_confidence: number | null;
+  extraction_latency_ms: number | null;
 }
 
 export interface CallState {
@@ -63,7 +66,11 @@ export type SidecarEvent =
   | { event: "call_started"; data: CallState }
   | { event: "call_ended"; data: CallState }
   | { event: "transcript_turn"; data: TranscriptTurn }
-  | { event: "order_updated"; data: { order: OrderTicket; changes: string[] } }
+  | { event: "order_updated"; data: { order: OrderTicket } }
+  | { event: "item_added"; data: OrderItem }
+  | { event: "item_removed"; data: { name: string } }
+  | { event: "item_modified"; data: { name: string; field: "quantity" | "modifier"; old: unknown; new: unknown } }
+  | { event: "item_confirmed"; data: { name: string } }
   | { event: "retrieval_hit"; data: RetrievalHit }
   | { event: "latency_updated"; data: LatencyMetric }
   | {
@@ -73,6 +80,14 @@ export type SidecarEvent =
         | { status: "written"; response: Record<string, unknown>; order: OrderTicket }
         | { status: "failed"; error: string };
     };
+
+export function activeItems(order: OrderTicket): OrderItem[] {
+  return order.items.filter((i) => i.status !== "removed");
+}
+
+export function activeSubtotalCents(order: OrderTicket): number {
+  return activeItems(order).reduce((s, i) => s + i.line_total_cents, 0);
+}
 
 export function emptyOrder(callId = ""): OrderTicket {
   return {
@@ -103,6 +118,7 @@ export function emptyState(): CallState {
       avg_turn_ms: null,
       rag_hits: 0,
       asr_confidence: null,
+      extraction_latency_ms: null,
     },
     pos_write_status: "pending",
   };

@@ -1,14 +1,17 @@
 "use client";
 
-import type { OrderTicket as Order } from "@/lib/types";
-import { formatCents } from "@/lib/types";
+import type { OrderItem, OrderTicket as Order, ItemStatus } from "@/lib/types";
+import { activeItems, activeSubtotalCents, formatCents } from "@/lib/types";
 
 interface OrderTicketProps {
   order: Order;
 }
 
 export function OrderTicketView({ order }: OrderTicketProps) {
-  const empty = order.items.length === 0;
+  const allItems = order.items;
+  const active = activeItems(order);
+  const hasNothing = allItems.length === 0;
+
   return (
     <div className="rounded-2xl bg-slate800/70 p-5">
       <div className="mb-3 flex items-center justify-between">
@@ -19,7 +22,7 @@ export function OrderTicketView({ order }: OrderTicketProps) {
         <StatusPill status={order.status} />
       </div>
 
-      {empty ? (
+      {hasNothing ? (
         <div className="rounded-xl border border-dashed border-slate700 px-4 py-8 text-center text-sm italic text-cream/40">
           Items will populate as Vox confirms them.
         </div>
@@ -32,21 +35,20 @@ export function OrderTicketView({ order }: OrderTicketProps) {
           <div className="rounded-xl border border-slate700 bg-slate900/70 p-3">
             <div className="mb-2 text-[10px] uppercase tracking-widest text-cream/40">Items</div>
             <ul className="space-y-1.5">
-              {order.items.map((item, idx) => (
-                <li key={idx} className="flex animate-fade-in items-baseline justify-between text-cream">
-                  <span>
-                    <span className="text-accentAmber">{item.quantity}×</span> {item.name}
-                    {item.modifier ? <span className="text-cream/50"> ({item.modifier})</span> : null}
-                  </span>
-                  <span className="text-cream/80">{formatCents(item.line_total_cents)}</span>
-                </li>
+              {allItems.map((item, idx) => (
+                <OrderItemRow key={`${item.name}-${idx}`} item={item} />
               ))}
             </ul>
             <div className="mt-3 border-t border-slate700 pt-2 text-right">
               <span className="text-[11px] uppercase tracking-widest text-cream/50">Subtotal: </span>
               <span className="text-base text-accentGreen">
-                {formatCents(order.items.reduce((s, i) => s + i.line_total_cents, 0))}
+                {formatCents(activeSubtotalCents(order))}
               </span>
+              {active.length !== allItems.length && (
+                <span className="ml-2 text-[10px] text-cream/40">
+                  ({allItems.length - active.length} removed)
+                </span>
+              )}
             </div>
           </div>
           {order.pickup_time && (
@@ -58,6 +60,56 @@ export function OrderTicketView({ order }: OrderTicketProps) {
       )}
     </div>
   );
+}
+
+function OrderItemRow({ item }: { item: OrderItem }) {
+  const removed = item.status === "removed";
+  const confirmed = item.status === "confirmed";
+
+  const baseRow = "flex items-baseline justify-between transition-all duration-300";
+  const stateClasses = removed
+    ? "text-cream/30 line-through"
+    : confirmed
+    ? "text-cream"
+    : "text-cream/70 italic";
+
+  return (
+    <li className={`animate-fade-in ${baseRow} ${stateClasses}`}>
+      <span>
+        <span className={removed ? "text-cream/30" : "text-accentAmber"}>
+          {item.quantity}×
+        </span>{" "}
+        {item.name}
+        {item.modifier ? (
+          <span className={removed ? "text-cream/25" : "text-cream/50"}>
+            {" "}({item.modifier})
+          </span>
+        ) : null}
+        <ItemStatusBadge status={item.status} />
+      </span>
+      <span className={removed ? "text-cream/25" : "text-cream/80"}>
+        {formatCents(item.line_total_cents)}
+      </span>
+    </li>
+  );
+}
+
+function ItemStatusBadge({ status }: { status: ItemStatus }) {
+  if (status === "removed") {
+    return (
+      <span className="ml-2 rounded bg-accentRose/15 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-accentRose">
+        cancelled
+      </span>
+    );
+  }
+  if (status === "pending") {
+    return (
+      <span className="ml-2 rounded bg-accentAmber/15 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-accentAmber">
+        pending
+      </span>
+    );
+  }
+  return null; // "confirmed" — no badge, just clean text
 }
 
 function StatusPill({ status }: { status: Order["status"] }) {

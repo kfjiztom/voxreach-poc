@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer } from "react";
 
-import type { CallState, SidecarEvent } from "./types";
+import type { CallState, OrderItem, SidecarEvent } from "./types";
 import { emptyState } from "./types";
 
 type Action =
@@ -23,17 +23,82 @@ function reducer(state: CallState, action: Action): CallState {
         case "call_started":
         case "call_ended":
           return ev.data;
+
         case "transcript_turn":
           return { ...state, transcript: [...state.transcript, ev.data] };
+
         case "order_updated":
+          // Authoritative snapshot of the whole order from the sidecar
           return { ...state, order: ev.data.order };
+
+        case "item_added": {
+          const newItem = ev.data;
+          // Avoid duplicates if order_updated already arrived for this item
+          if (state.order.items.some((i) => i.name === newItem.name && i.status !== "removed")) {
+            return state;
+          }
+          return {
+            ...state,
+            order: { ...state.order, items: [...state.order.items, newItem] },
+          };
+        }
+
+        case "item_removed":
+          return {
+            ...state,
+            order: {
+              ...state.order,
+              items: state.order.items.map((i) =>
+                i.name === ev.data.name ? { ...i, status: "removed" as const } : i,
+              ),
+            },
+          };
+
+        case "item_modified":
+          return {
+            ...state,
+            order: {
+              ...state.order,
+              items: state.order.items.map((i): OrderItem => {
+                if (i.name !== ev.data.name || i.status === "removed") return i;
+                if (ev.data.field === "quantity") {
+                  const newQty = Number(ev.data.new) || i.quantity;
+                  return {
+                    ...i,
+                    quantity: newQty,
+                    line_total_cents: i.unit_price_cents * newQty,
+                  };
+                }
+                if (ev.data.field === "modifier") {
+                  return { ...i, modifier: (ev.data.new as string | null) ?? null };
+                }
+                return i;
+              }),
+            },
+          };
+
+        case "item_confirmed":
+          return {
+            ...state,
+            order: {
+              ...state.order,
+              items: state.order.items.map((i): OrderItem =>
+                i.name === ev.data.name && i.status === "pending"
+                  ? { ...i, status: "confirmed" as const }
+                  : i,
+              ),
+            },
+          };
+
         case "retrieval_hit":
           return {
             ...state,
             retrieval_log: [...state.retrieval_log, ev.data],
           };
+
         case "latency_updated":
           return { ...state, latency: ev.data };
+
         case "pos_write":
           if (ev.data.status === "written") {
             return {
@@ -46,6 +111,7 @@ function reducer(state: CallState, action: Action): CallState {
             ...state,
             pos_write_status: ev.data.status,
           };
+
         default:
           return state;
       }
@@ -57,7 +123,6 @@ function reducer(state: CallState, action: Action): CallState {
 
 export function useCallState() {
   const [state, dispatch] = useReducer(reducer, emptyState());
-  const lastChangesRef = useRef<string[]>([]);
 
   useEffect(() => {
     const es = new EventSource("/api/sidecar/events");
@@ -65,12 +130,12 @@ export function useCallState() {
     const handle = (ev: MessageEvent, eventName: SidecarEvent["event"]) => {
       try {
         const parsed = JSON.parse(ev.data);
-        // The python side emits {event, data}; pluck out data and re-tag with the event name.
+        // Sidecar emits {event, data}; pluck out data, re-tag with event name
         const innerData = parsed.data ?? parsed;
-        dispatch({ type: "event", payload: { event: eventName, data: innerData } as SidecarEvent });
-        if (eventName === "order_updated" && parsed.data?.changes) {
-          lastChangesRef.current = parsed.data.changes;
-        }
+        dispatch({
+          type: "event",
+          payload: { event: eventName, data: innerData } as SidecarEvent,
+        });
       } catch (err) {
         console.error("SSE parse error", err, ev.data);
       }
@@ -82,6 +147,10 @@ export function useCallState() {
       "call_ended",
       "transcript_turn",
       "order_updated",
+      "item_added",
+      "item_removed",
+      "item_modified",
+      "item_confirmed",
       "retrieval_hit",
       "latency_updated",
       "pos_write",
@@ -99,5 +168,5 @@ export function useCallState() {
     };
   }, []);
 
-  return { state, dispatch, lastChanges: lastChangesRef.current };
+  return { state, dispatch };
 }

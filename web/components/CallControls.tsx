@@ -5,13 +5,16 @@ import { useState } from "react";
 import { endCall, playMockScenario, startCall } from "@/lib/api";
 import type { CallStatus } from "@/lib/types";
 
+type ScenarioKey = "order" | "info" | "escalate" | "modify";
+
 interface CallControlsProps {
   status: CallStatus;
   mockMode: boolean;
 }
 
-const SCENARIOS: Array<{ key: "order" | "info" | "escalate"; label: string; description: string }> = [
-  { key: "order", label: "Place an order", description: "Bulgogi + pajeon, full happy path → POS write" },
+const SCENARIOS: Array<{ key: ScenarioKey; label: string; description: string }> = [
+  { key: "order", label: "Place an order", description: "Bulgogi + pajeon → POS write" },
+  { key: "modify", label: "Cancel & modify", description: "Caller changes mind mid-order" },
   { key: "info", label: "Ask info", description: "Hours, vegan options, parking" },
   { key: "escalate", label: "Escalate", description: "Caller asks for the manager" },
 ];
@@ -42,7 +45,7 @@ export function CallControls({ status, mockMode }: CallControlsProps) {
     }
   };
 
-  const handleMock = async (scenario: "order" | "info" | "escalate") => {
+  const handleMock = async (scenario: ScenarioKey) => {
     setBusy(true);
     try {
       await playMockScenario(scenario);
@@ -82,9 +85,9 @@ export function CallControls({ status, mockMode }: CallControlsProps) {
       {mockMode && (
         <div>
           <div className="mb-2 text-center text-[10px] uppercase tracking-widest text-ink/40">
-            Demo scenarios (no GPU required)
+            Demo scenarios
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {SCENARIOS.map((s) => (
               <button
                 key={s.key}
