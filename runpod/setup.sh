@@ -10,8 +10,16 @@
 set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="$(cd "${POC_DIR}/../.." && pwd)"
+# WORKSPACE = where the RunPod network volume is mounted. Convention is /workspace.
+# Override only if your pod is configured differently.
+WORKSPACE="${WORKSPACE:-/workspace}"
 MOSHI_DIR="${WORKSPACE}/moshi-rag"
+
+if [ ! -d "${WORKSPACE}" ]; then
+  echo "!! ${WORKSPACE} does not exist. Either your network volume isn't mounted,"
+  echo "   or you need to override WORKSPACE=<path> before running this script."
+  exit 1
+fi
 
 # CUDA wheel index for the torch/torchaudio/torchvision realignment step.
 # Override if your pod's CUDA driver is on a different family (cu126, cu128, cu130).

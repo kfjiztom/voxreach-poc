@@ -5,7 +5,7 @@
 set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="$(cd "${POC_DIR}/../.." && pwd)"
+WORKSPACE="${WORKSPACE:-/workspace}"
 MOSHI_DIR="${WORKSPACE}/moshi-rag"
 ML_VENV="${WORKSPACE}/.venv/voxreach"
 
