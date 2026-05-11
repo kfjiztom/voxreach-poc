@@ -1,103 +1,120 @@
 # RunPod resume — VoxReach POC (PersonaPlex variant)
 
-Use this when you've **stopped** the pod (not terminated) and want to bring everything back up.
+Use this when you've **stopped** the pod, **terminated and re-created** with the same network volume attached, or when RunPod recycled your pod onto new hardware.
 
-If you terminated the pod, follow `BRINGUP.md` from scratch instead.
+Everything that survives pod loss lives on the **persistent network volume at `/workspace`**: venvs, model weights, the NVIDIA personaplex source, pip caches, and the env file. The container disk and any installed apt packages will be re-installed automatically on the new pod.
 
 ---
 
-## Tonight before you stop the pod
+## On the new pod — bring everything back up
+
+Three commands once the pod is "Running" and the network volume is attached:
 
 ```bash
-# 1. Confirm everything is on GitHub
-cd /opt/voxreach-poc
-git status
-# Should print: "nothing to commit, working tree clean"
-# If anything modified, commit/push it first.
+# 1. SSH in (pod ID will be different — get from RunPod console Connect tab)
+ssh <new-pod-id>@ssh.runpod.io -i ~/.ssh/runpod
 
-# 2. (Optional) Take a screen recording of the working demo as insurance
-# QuickTime / OBS / browser screen capture — 60-90 seconds is fine
+# 2. Source the persistent env file (sets PP_VENV, HF_HOME, etc.)
+source /workspace/.voxreach.env
 
-# 3. Note your current PersonaPlex URL
-# (Find in RunPod console → Connect → port 8998. Should be:
-#  https://<POD-ID>-8998.proxy.runpod.net)
-echo "Pod ID:" $(hostname)   # not the proxy URL but useful for reference
+# 3. Re-export your HF token (this is per-pod, not on the volume)
+export HF_TOKEN="<your-token>"
+
+# 4. Re-install the apt-level system packages (these are ephemeral)
+apt-get update -qq && apt-get install -y -qq libopus-dev ffmpeg tmux jq curl git nodejs
 ```
 
-Then in the RunPod web console: click **Stop** on the pod. Cost drops to ~$5/month for the 50 GB container disk while stopped. **Never click Terminate** unless you actually want to nuke everything.
-
----
-
-## Tomorrow — start the pod and bring services up
-
-Three commands once the pod is back to "Running":
+Then start the stack:
 
 ```bash
-# 1. SSH in
-ssh <pod-id>@ssh.runpod.io -i ~/.ssh/runpod
-# (pod-id may be different after restart — check RunPod console Connect tab)
+cd /workspace/voxreach-poc
 
-# 2. cd to the repo and pull any new commits
-cd /opt/voxreach-poc
+# Pull latest commits in case anything got fixed on main
 git pull
 
-# 3. Bring everything up
+# Optional: if you want the iframe-mode demo, set this with your NEW pod's URL
+export NEXT_PUBLIC_PERSONAPLEX_URL="https://<new-pod-id>-8998.proxy.runpod.net"
+
+# Launch all three services in tmux
 bash runpod/start.sh
 tmux attach -t voxreach
 ```
 
-After ~60 seconds (PersonaPlex needs to load weights into VRAM), all three windows should be healthy:
-- `personaplex` window: `Listening on 0.0.0.0:8998`
-- `sidecar` window: `Uvicorn running on http://0.0.0.0:8001`
-- `web` window: `Ready in Xms`
+After ~90 seconds (PersonaPlex loads weights into VRAM, web rebuilds with the new URL), all three windows should be healthy.
 
 ---
 
-## If `start.sh` fails because nginx is squatting on the ports
+## What's on the volume vs ephemeral
 
-This is the RunPod placeholder issue we hit. Quick fix:
+| Item | Lives where | Survives pod recycle? |
+|---|---|---|
+| Repo clone (`/workspace/voxreach-poc`) | `/workspace` | ✅ |
+| NVIDIA personaplex source (`/workspace/personaplex`) | `/workspace` | ✅ |
+| PersonaPlex venv (`/workspace/.venv/voxreach-personaplex`) | `/workspace` | ✅ |
+| Sidecar venv (`/workspace/voxreach-poc/sidecar/.venv`) | `/workspace` | ✅ |
+| HF model cache (`/workspace/.cache/huggingface`) | `/workspace` | ✅ |
+| pip cache (`/workspace/.cache/pip`) | `/workspace` | ✅ |
+| Env file (`/workspace/.voxreach.env`) | `/workspace` | ✅ |
+| apt-installed system packages | `/usr` | ❌ (re-installed on new pod) |
+| Node binary | `/usr` | ❌ |
+| HF_TOKEN | env only | ❌ (re-export) |
+| Running processes (PersonaPlex, sidecar, web) | RAM | ❌ |
+
+---
+
+## If the pod is brand new (first time on a fresh volume)
+
+If `/workspace/.voxreach.env` doesn't exist, you need the full setup:
+
+```bash
+# Make sure HF_TOKEN is set
+export HF_TOKEN="<your-token>"
+
+# Clone the repo to the volume
+cd /workspace
+gh auth login --hostname github.com --git-protocol https --web   # if gh not auth'd
+gh repo clone kfjiztom/voxreach-poc
+cd voxreach-poc
+
+# Run setup (~10-15 min — installs everything on /workspace)
+tmux new -s setup
+bash runpod/setup.sh 2>&1 | tee /workspace/setup.log
+# Detach: Ctrl+b then d
+```
+
+Once `==> Setup complete` prints, future pods follow the resume flow above.
+
+---
+
+## Common gotcha — nginx squatting on ports
+
+RunPod runs nginx as a "placeholder" on exposed ports until a real service binds. `start.sh` now kills it automatically if detected. If you ever hit `EADDRINUSE` on `:3001` or `:8001`:
 
 ```bash
 pkill -x nginx
 sleep 1
 ss -tlnp 2>/dev/null | grep -E ":3001|:8001"   # should be empty
-bash runpod/start.sh   # retry
+bash runpod/start.sh
 ```
 
 ---
 
-## Re-injecting the persona prompt (if PersonaPlex resets it)
+## If the PersonaPlex iframe URL needs to change
 
-If you injected the Vox prompt via the PersonaPlex web UI yesterday and it didn't persist:
-
-1. Open your PersonaPlex URL: `https://<POD-ID>-8998.proxy.runpod.net`
-2. Find the system-prompt / instructions / persona text field
-3. Paste the contents of `persona/vox_personaplex_prompt.txt` into it
-4. Start the call
-
----
-
-## Bringing up the branded iframe shell
-
-The web app needs `NEXT_PUBLIC_PERSONAPLEX_URL` baked in at build time. Whenever the pod's URL changes:
+The pod's RunPod proxy URL changes every time you destroy/recreate the pod. The Next.js build bakes the URL in at build time, so you need to rebuild whenever it changes:
 
 ```bash
-cd /opt/voxreach-poc/web
-export NEXT_PUBLIC_PERSONAPLEX_URL="https://<NEW-POD-ID>-8998.proxy.runpod.net"
+cd /workspace/voxreach-poc/web
+export NEXT_PUBLIC_PERSONAPLEX_URL="https://<new-pod-id>-8998.proxy.runpod.net"
 export NEXT_PUBLIC_MOCK_MODE=true
 export SIDECAR_URL=http://localhost:8001
-
 npm run build
-nohup npm run start > /tmp/web.log 2>&1 &
-sleep 6
-curl -sw "%{http_code}\n" -o /dev/null http://localhost:3001/
+# Then restart the web window in tmux, or kill the tmux session and re-run start.sh
 ```
-
-If the pod ID is the same as yesterday, you can skip the rebuild — `start.sh` will reuse the existing `.next/` build.
 
 ---
 
-## Verify everything is up before opening the demo URL
+## Verify everything is up
 
 ```bash
 echo "=== ports ==="
@@ -113,44 +130,24 @@ echo "=== personaplex health ==="
 curl -sk "https://localhost:8998" | head -1
 ```
 
-You want:
+Healthy looks like:
 - Three services on the right ports
-- Sidecar returns `null` or JSON (not HTML)
-- Web returns 200
-- PersonaPlex returns HTML (its UI)
+- Sidecar returns `null` or JSON (NOT HTML)
+- Web returns `200`
+- PersonaPlex returns HTML
 
 ---
 
-## Demo URLs to open
+## Re-injecting the persona prompt
 
-In RunPod console → Connect tab, two URLs matter:
+If you injected the Vox prompt via PersonaPlex's web UI and it doesn't persist:
 
-| Port | Purpose | Where to find |
-|---|---|---|
-| **3001** | The branded Hearth & Pass shell — **this is the URL you share** | RunPod Connect tab |
-| 8998 | Direct PersonaPlex UI (for paste-the-prompt access, fallback) | RunPod Connect tab |
+1. Open `https://<pod-id>-8998.proxy.runpod.net`
+2. Find the system-prompt / instructions text field
+3. Paste contents of `persona/vox_personaplex_prompt.txt`
+4. Start the call
 
-Open 3001 in a browser. The iframe inside will load 8998 automatically.
-
----
-
-## What's saved vs lost across stop/start
-
-| Item | Survives stop/start? | Notes |
-|---|---|---|
-| Cloned repo (`/opt/voxreach-poc`) | ✅ | On container disk |
-| PersonaPlex venv (`/opt/voxreach-personaplex`) | ✅ | On container disk |
-| NVIDIA personaplex source (`/opt/personaplex`) | ✅ | On container disk |
-| HF cache + weights (`/root/.cache/huggingface`) | ✅ | On container disk |
-| Web build output (`web/.next/`) | ✅ | On container disk |
-| `npm run start` background process | ❌ | Need to restart via `start.sh` |
-| Sidecar process | ❌ | Need to restart via `start.sh` |
-| PersonaPlex server process | ❌ | Need to restart via `start.sh` |
-| tmux sessions | ❌ | `start.sh` recreates them |
-| Persona prompt injected via web UI | **Possibly ❌** | Re-paste from `persona/vox_personaplex_prompt.txt` if Vox seems generic |
-| Browser mic permission | ✅ | If same domain (proxy URL) |
-
-Total time from "Start" to "demo URL responds 200": **about 90 seconds** (pod warm-up ~30s, PersonaPlex weight load ~30-60s, sidecar + web ~5s).
+If you find the right CLI flag for `moshi.server` to load the prompt at server startup, push that fix to `start.sh` so it survives the next pod recycle automatically.
 
 ---
 
@@ -158,7 +155,8 @@ Total time from "Start" to "demo URL responds 200": **about 90 seconds** (pod wa
 
 | Action | When |
 |---|---|
-| **Stop** | Done for the day / between demos. ~$5/month while stopped. |
-| **Terminate** | Pod is broken beyond repair, or you're done with VoxReach for weeks. Lose ~25 min on next bring-up. |
+| **Stop** | Done for the day. Container disk preserved on pod-specific volume, ~$5/month while stopped, restart in 30 sec. |
+| **Terminate** | Done with this pod, or pod is broken. Container disk wiped. With network volume attached, your work survives — bring up a new pod with the same volume. |
+| **Hardware recycle** (RunPod's choice) | Out of your control. With network volume, you just bring up a new pod. |
 
-Default to **Stop**.
+The persistent network volume is what makes pod-loss recoverable in minutes instead of an hour.

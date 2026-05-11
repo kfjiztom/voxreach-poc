@@ -4,10 +4,18 @@
 
 set -euo pipefail
 
+WORKSPACE="${WORKSPACE:-/workspace}"
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PP_VENV="${PP_VENV:-/opt/voxreach-personaplex}"
-PERSONAPLEX_REPO="${PERSONAPLEX_REPO:-/opt/personaplex}"
-SIDECAR_VENV="${POC_DIR}/sidecar/.venv"
+
+# Source the persistent env file if it exists (sets PP_VENV, HF_HOME, etc.)
+if [ -f "${WORKSPACE}/.voxreach.env" ]; then
+  # shellcheck disable=SC1091
+  source "${WORKSPACE}/.voxreach.env"
+fi
+
+PP_VENV="${PP_VENV:-${WORKSPACE}/.venv/voxreach-personaplex}"
+PERSONAPLEX_REPO="${PERSONAPLEX_REPO:-${WORKSPACE}/personaplex}"
+SIDECAR_VENV="${SIDECAR_VENV:-${POC_DIR}/sidecar/.venv}"
 
 SESSION="voxreach"
 
@@ -25,15 +33,19 @@ if [ ! -d "${SIDECAR_VENV}" ]; then
   echo "!! Sidecar venv not found at ${SIDECAR_VENV}. Run setup.sh first."
   exit 1
 fi
+if [ ! -d "${PERSONAPLEX_REPO}" ]; then
+  echo "!! NVIDIA personaplex repo not found at ${PERSONAPLEX_REPO}. Run setup.sh first."
+  exit 1
+fi
 
 if [ -z "${HF_TOKEN:-}" ]; then
-  echo "!! HF_TOKEN not set. Run setup.sh first or export HF_TOKEN."
+  echo "!! HF_TOKEN not set. Export it on this pod before running."
   exit 1
 fi
 export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 
-# Cache redirects (in case shell wasn't sourced from .bashrc)
-export HF_HOME="${HF_HOME:-/root/.cache/huggingface}"
+# Cache redirects
+export HF_HOME="${HF_HOME:-${WORKSPACE}/.cache/huggingface}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
 
@@ -41,14 +53,17 @@ PERSONAPLEX_PORT="${PERSONAPLEX_PORT:-8998}"
 SIDECAR_PORT="${SIDECAR_PORT:-8001}"
 WEB_PORT="${WEB_PORT:-3001}"
 
+# Kill RunPod's nginx placeholder if it's squatting on our ports.
+# (It serves a README page on exposed ports until a real service binds.)
+if ss -tlnp 2>/dev/null | grep -E ":${SIDECAR_PORT}|:${WEB_PORT}" | grep -q nginx; then
+  echo "==> Killing RunPod's placeholder nginx ..."
+  pkill -x nginx 2>/dev/null || true
+  sleep 1
+fi
+
 echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
 # Window 1: PersonaPlex full-duplex speech server
-# - NVIDIA's moshi fork auto-loads PersonaPlex weights — no --hf-repo needed.
-# - No --ssl: RunPod's proxy already wraps the port in HTTPS, so internal HTTP
-#   is fine. Browser mic still works because the public URL is https://*.proxy.runpod.net.
-# - cd into the personaplex repo so any relative asset paths (NATF*.pt voice
-#   prompts in assets/) resolve correctly.
 tmux new-session -d -s "${SESSION}" -n personaplex "
   source ${PP_VENV}/bin/activate;
   cd ${PERSONAPLEX_REPO};
@@ -60,7 +75,7 @@ tmux new-session -d -s "${SESSION}" -n personaplex "
   python -m moshi.server --host 0.0.0.0 --port ${PERSONAPLEX_PORT}
 "
 
-# Window 2: Sidecar (transcript watcher, intent extraction, POS stub)
+# Window 2: Sidecar
 tmux new-window -t "${SESSION}" -n sidecar "
   cd ${POC_DIR}/sidecar;
   echo '[sidecar] starting on :${SIDECAR_PORT}';
@@ -71,7 +86,8 @@ tmux new-window -t "${SESSION}" -n sidecar "
 tmux new-window -t "${SESSION}" -n web "
   cd ${POC_DIR}/web;
   echo '[web] building and starting on :${WEB_PORT}';
-  export NEXT_PUBLIC_MOCK_MODE=false;
+  export NEXT_PUBLIC_MOCK_MODE=\${NEXT_PUBLIC_MOCK_MODE:-true};
+  export NEXT_PUBLIC_PERSONAPLEX_URL=\${NEXT_PUBLIC_PERSONAPLEX_URL:-};
   export SIDECAR_URL=http://localhost:${SIDECAR_PORT};
   npm run build && npm run start
 "
@@ -83,5 +99,9 @@ echo "    Kill:    tmux kill-session -t ${SESSION}"
 echo ""
 echo "==> Public URLs (via RunPod proxy):"
 echo "    Web demo:        https://<POD-ID>-${WEB_PORT}.proxy.runpod.net"
-echo "    PersonaPlex UI:  https://<POD-ID>-${PERSONAPLEX_PORT}.proxy.runpod.net (raw fallback)"
+echo "    PersonaPlex UI:  https://<POD-ID>-${PERSONAPLEX_PORT}.proxy.runpod.net"
 echo "    Sidecar:         https://<POD-ID>-${SIDECAR_PORT}.proxy.runpod.net/api/state"
+echo ""
+echo "==> If web should embed PersonaPlex iframe, export the PersonaPlex"
+echo "    proxy URL BEFORE running start.sh (Next bakes it in at build time):"
+echo "    export NEXT_PUBLIC_PERSONAPLEX_URL='https://<POD-ID>-${PERSONAPLEX_PORT}.proxy.runpod.net'"
