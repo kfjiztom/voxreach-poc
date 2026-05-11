@@ -198,17 +198,20 @@ assert torch.cuda.is_available(), "CUDA not available — check pod GPU and CUDA
 PY
 
 # ---------------------------------------------------------------------------
+# Pin numpy BEFORE vLLM install so vLLM's compiled extensions match.
+# vLLM otherwise pulls numpy 2.4, but moshi requires numpy<2.3 — and
+# downgrading numpy AFTER vLLM is built breaks vLLM's C-extension ABI.
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Pinning numpy to >=1.26,<2.3 (satisfies both moshi and vLLM) ..."
+pip install --quiet --upgrade "numpy>=1.26,<2.3"
+
+# ---------------------------------------------------------------------------
 # vLLM (retrieval backend) — also into the ML venv
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Installing vLLM into ${ML_VENV} ..."
-pip install --quiet "vllm>=0.6.4"
-
-# vLLM pulls numpy 2.4 (latest) but moshi pins numpy<2.3. Pin numpy back
-# to a range that satisfies both. Without this, `import moshi` warns and
-# can fail at runtime depending on which numpy API surfaces.
-echo "==> Realigning numpy to satisfy moshi's constraint (>=1.26,<2.3) ..."
-pip install --quiet --upgrade "numpy>=1.26,<2.3"
+pip install --quiet "vllm>=0.6.4" "numpy>=1.26,<2.3"
 
 # ---------------------------------------------------------------------------
 # Pre-pull weights (so first start.sh is fast) — runs inside ML venv
