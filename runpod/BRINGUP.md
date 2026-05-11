@@ -42,11 +42,12 @@ The setup script will:
 - **Symlink** `/root/.cache/{huggingface,pip}` → `/workspace/.cache/{huggingface,pip}` for tools that ignore env vars
 - `apt install libopus-dev ffmpeg tmux jq curl git` and clean apt cache
 - **Upgrade pip** (RunPod base images often ship a 2024-era pip with vulnerability warnings)
-- Create `poc/sidecar/.venv` and install Python deps (FastAPI, uvicorn, sse-starlette, etc.)
+- Create `poc/sidecar/.venv` and install lightweight Python deps (FastAPI, uvicorn, sse-starlette, etc.)
+- **Create heavy ML venv at `/workspace/.venv/voxreach`** — moshi-rag + vLLM + torch family go HERE, not into system site-packages on `/`. Roughly 6 GB of packages that would otherwise eat the container disk.
 - Clone `kyutai-labs/moshi-rag` into `/workspace/moshi-rag`
-- `pip install` moshi-rag (which pulls torch 2.9.x as a transitive dep)
+- `pip install` moshi-rag into the ML venv (which pulls torch 2.9.x as a transitive dep)
 - **Realign torchaudio + torchvision** to match the now-installed torch — without this, the pre-baked torchaudio 2.4.1 silently fails at runtime
-- Install vLLM
+- Install vLLM into the ML venv
 - Pre-download `kyutai/moshika-rag-pytorch-bf16` and `google/gemma-3-12b-it` weights to `/workspace/.cache/huggingface` (~38 GB)
 - Install Node 20 + run `npm ci` for the web app
 - Print final `df -h` so you can confirm `/` stayed small and `/workspace` got the bytes

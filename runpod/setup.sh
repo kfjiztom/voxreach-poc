@@ -112,14 +112,34 @@ pip install --quiet \
 deactivate
 
 # ---------------------------------------------------------------------------
-# Moshi-RAG clone + install
+# Heavy ML venv on /workspace — moshi-rag + vLLM + their torch family.
+#
+# Without this, `pip install` as root with no venv would dump 6+ GB of
+# packages into /usr/lib/python3.X/site-packages on the 20 GB container disk.
+# Pinning the venv to /workspace keeps the container disk safe and survives
+# pod destruction (the venv stays on the network volume).
+# ---------------------------------------------------------------------------
+ML_VENV="${WORKSPACE}/.venv/voxreach"
+echo ""
+echo "==> Setting up heavy ML venv at ${ML_VENV} ..."
+mkdir -p "$(dirname "${ML_VENV}")"
+if [ ! -d "${ML_VENV}" ]; then
+  python3 -m venv "${ML_VENV}"
+fi
+# shellcheck disable=SC1091
+source "${ML_VENV}/bin/activate"
+pip install --quiet --upgrade pip
+pip install --quiet huggingface_hub
+
+# ---------------------------------------------------------------------------
+# Moshi-RAG clone + install (into the ML venv on /workspace)
 # ---------------------------------------------------------------------------
 echo ""
 if [ ! -d "${MOSHI_DIR}" ]; then
   echo "==> Cloning kyutai-labs/moshi-rag ..."
   git clone https://github.com/kyutai-labs/moshi-rag "${MOSHI_DIR}"
 fi
-echo "==> Installing moshi-rag Python package ..."
+echo "==> Installing moshi-rag Python package into ${ML_VENV} ..."
 cd "${MOSHI_DIR}"
 pip install --quiet -U "git+https://github.com/kyutai-labs/moshi-rag.git#egg=moshi&subdirectory=moshi"
 pip install --quiet rustymimi
@@ -131,11 +151,11 @@ pip install --quiet rustymimi
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Realigning torchaudio + torchvision to installed torch ..."
-INSTALLED_TORCH=$(python3 -c "import torch; print(torch.__version__.split('+')[0])")
+INSTALLED_TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
 echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from ${CUDA_INDEX_URL}"
 pip install --quiet --upgrade --index-url "${CUDA_INDEX_URL}" torchaudio torchvision
 
-python3 - <<'PY'
+python - <<'PY'
 import torch, torchaudio, torchvision
 print(f"   torch       {torch.__version__}")
 print(f"   torchaudio  {torchaudio.__version__}")
@@ -145,14 +165,14 @@ assert torch.cuda.is_available(), "CUDA not available — check pod GPU and CUDA
 PY
 
 # ---------------------------------------------------------------------------
-# vLLM (retrieval backend)
+# vLLM (retrieval backend) — also into the ML venv
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Installing vLLM ..."
+echo "==> Installing vLLM into ${ML_VENV} ..."
 pip install --quiet "vllm>=0.6.4"
 
 # ---------------------------------------------------------------------------
-# Pre-pull weights (so first start.sh is fast)
+# Pre-pull weights (so first start.sh is fast) — runs inside ML venv
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Pre-downloading model weights to ${HF_HOME} (this is the long step) ..."
@@ -169,6 +189,8 @@ for repo in [
     snapshot_download(repo_id=repo, token=token)
 print("   done.")
 PY
+
+deactivate
 
 # ---------------------------------------------------------------------------
 # Node + web app

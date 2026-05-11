@@ -7,8 +7,20 @@ set -euo pipefail
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE="$(cd "${POC_DIR}/../.." && pwd)"
 MOSHI_DIR="${WORKSPACE}/moshi-rag"
+ML_VENV="${WORKSPACE}/.venv/voxreach"
 
 SESSION="voxreach"
+
+if [ ! -d "${ML_VENV}" ]; then
+  echo "!! ML venv not found at ${ML_VENV}. Run setup.sh first."
+  exit 1
+fi
+
+# Ensure cache redirects are exported into every tmux window we spawn
+export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/workspace/.cache/pip}"
 
 if tmux has-session -t "${SESSION}" 2>/dev/null; then
   echo "==> tmux session '${SESSION}' already running. Attach with 'tmux attach -t ${SESSION}'."
@@ -29,8 +41,12 @@ WEB_PORT="${WEB_PORT:-3001}"
 
 echo "==> Starting tmux session '${SESSION}' with 4 windows."
 
-# Window 1: vLLM retrieval backend
+# Window 1: vLLM retrieval backend (uses the ML venv on /workspace)
 tmux new-session -d -s "${SESSION}" -n vllm "
+  source ${ML_VENV}/bin/activate;
+  export HF_HOME=${HF_HOME};
+  export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
+  export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
   echo '[vllm] starting Gemma-3-12B on :${VLLM_PORT}';
   python -m vllm.entrypoints.openai.api_server \
     --model google/gemma-3-12b-it \
@@ -39,8 +55,12 @@ tmux new-session -d -s "${SESSION}" -n vllm "
     --max-model-len 4096
 "
 
-# Window 2: Moshi-RAG full-duplex speech server
+# Window 2: Moshi-RAG full-duplex speech server (same ML venv)
 tmux new-window -t "${SESSION}" -n moshi "
+  source ${ML_VENV}/bin/activate;
+  export HF_HOME=${HF_HOME};
+  export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
+  export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
   cd ${MOSHI_DIR};
   echo '[moshi] waiting for vLLM ...';
   until curl -fs http://localhost:${VLLM_PORT}/v1/models >/dev/null; do sleep 2; done;
