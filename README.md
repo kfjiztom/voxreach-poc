@@ -87,13 +87,15 @@ npm run dev
 
 The default state of the page shows three "scenario" buttons (Order / Info / Escalate). Click any to play a canned conversation through the full pipeline — transcript bubbles, retrieval log, order ticket, latency panel, and POS write all populate as if a real call were happening.
 
-### Live mode (RunPod with A100)
+### Live mode (RunPod GPU)
 
-See [runpod/BRINGUP.md](runpod/BRINGUP.md). One-time setup, then:
+See [runpod/BRINGUP.md](runpod/BRINGUP.md) for first-time setup on a fresh persistent volume, or [runpod/RESUME.md](runpod/RESUME.md) for bringing a recycled pod back up.
 
 ```bash
-cd /workspace/voxreach-poc/poc
-bash runpod/start.sh
+cd /workspace/voxreach-poc
+git clone https://github.com/kfjiztom/voxreach-poc.git   # first time only
+bash runpod/setup.sh                                     # first time only — ~15 min
+bash runpod/start.sh                                     # every time
 # open the RunPod public URL for port 3001
 ```
 

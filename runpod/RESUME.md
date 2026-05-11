@@ -70,10 +70,9 @@ If `/workspace/.voxreach.env` doesn't exist, you need the full setup:
 # Make sure HF_TOKEN is set
 export HF_TOKEN="<your-token>"
 
-# Clone the repo to the volume
+# Clone the repo to the volume (public repo — no auth needed)
 cd /workspace
-gh auth login --hostname github.com --git-protocol https --web   # if gh not auth'd
-gh repo clone kfjiztom/voxreach-poc
+git clone https://github.com/kfjiztom/voxreach-poc.git
 cd voxreach-poc
 
 # Run setup (~10-15 min — installs everything on /workspace)

@@ -27,41 +27,40 @@ Region: any with A100 80GB stock — `us-ks-2`, `us-ca-2`, or `eu-ro-1` usually 
 
 This is account-level — you only do it once across all your RunPod work.
 
-## 3. One-time setup (per pod)
+## 3. One-time setup (per persistent volume)
 
 SSH into the pod, then:
 
 ```bash
-# 1. Install gh CLI (if not already)
-apt-get update && apt-get install -y gh
+# 1. Confirm the network volume is mounted
+df -h /workspace                       # should show ~50 GB
 
-# 2. Auth (device-code flow — paste code at github.com/login/device on your laptop)
-gh auth login --hostname github.com --git-protocol https --web
+# 2. Make sure HF_TOKEN is exported
+export HF_TOKEN="<your-token>"
+echo "HF_TOKEN length: ${#HF_TOKEN}"   # should print 37
 
-# 3. Clone the POC anywhere on local disk
-cd /opt
-gh repo clone kfjiztom/voxreach-poc
+# 3. Clone the POC into the persistent volume (public repo — no auth)
+cd /workspace
+git clone https://github.com/kfjiztom/voxreach-poc.git
 cd voxreach-poc
 
-# 4. Make sure HF_TOKEN is exported
-echo "HF_TOKEN length: ${#HF_TOKEN}"
-
-# 5. Run setup inside tmux so SSH disconnect doesn't kill it
+# 4. Run setup inside tmux so SSH disconnect doesn't kill it
 tmux new -s setup
-bash runpod/setup.sh 2>&1 | tee /root/setup.log
+bash runpod/setup.sh 2>&1 | tee /workspace/setup.log
 # Detach: Ctrl+b then d. Reattach later: tmux attach -t setup.
 ```
 
 The setup script will:
-- Set up onboard cache locations (`/root/.cache/huggingface`, `/root/.cache/pip`)
+- Set up persistent cache locations (`/workspace/.cache/huggingface`, `/workspace/.cache/pip`)
+- Write `/workspace/.voxreach.env` with all path variables for future pods to source
 - `apt install libopus-dev ffmpeg tmux jq curl git`
 - Upgrade pip
-- Create sidecar venv at `<repo>/sidecar/.venv` and install FastAPI + uvicorn deps
-- Create PersonaPlex venv at `/opt/voxreach-personaplex` and install `moshi`, `huggingface_hub`, `hf_transfer`
+- Create sidecar venv at `/workspace/voxreach-poc/sidecar/.venv` and install FastAPI + uvicorn deps
+- Clone `NVIDIA/personaplex` to `/workspace/personaplex`
+- Create PersonaPlex venv at `/workspace/.venv/voxreach-personaplex` and install NVIDIA's moshi fork
 - Verify CUDA works (fails fast if not)
-- Pre-download `nvidia/personaplex-7b-v1` weights (~14 GB, 5-8 min on RunPod bandwidth)
+- Pre-download `nvidia/personaplex-7b-v1` weights (~14 GB to `/workspace/.cache/huggingface`)
 - Install Node 20 + run `npm ci` for the web app
-- Print final disk usage
 
 Total: ~10-15 minutes on a fresh pod.
 
