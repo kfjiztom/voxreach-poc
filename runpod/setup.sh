@@ -143,7 +143,9 @@ fi
 # shellcheck disable=SC1091
 source "${ML_VENV}/bin/activate"
 pip install --quiet --upgrade pip
-pip install --quiet huggingface_hub
+# hf_transfer enables HF_HUB_ENABLE_HF_TRANSFER=1 fast downloads (~3x).
+# RunPod images often set that env var; without the package, downloads error.
+pip install --quiet huggingface_hub hf_transfer
 
 # ---------------------------------------------------------------------------
 # Moshi-RAG clone + install (into the ML venv on /workspace)
