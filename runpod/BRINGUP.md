@@ -9,7 +9,7 @@ The whole demo runs on a single RunPod GPU pod. The frontend can also be develop
 
 | Setting | Value | Notes |
 |---|---|---|
-| GPU | **A100 80GB PCIe** (or **H100 80GB**) | PersonaPlex needs ~14 GB VRAM; A100 80GB has plenty of headroom |
+| GPU | **24 GB minimum** — RTX 4090, A10G, A40, L40S all work. A100 80GB if you have headroom budget. | NVIDIA's PersonaPlex docs spec 24 GB VRAM minimum (model is ~14 GB; rest is KV cache + headroom). H100 80GB also fine. |
 | Template | RunPod `PyTorch 2.4.0 · py3.12 · cuda 12.4` (or newer) | CUDA 12.x required |
 | Container disk | **30 GB** (default on most templates) | Holds OS + base PyTorch + venvs + weights — onboard storage, no network volume needed |
 | Network volume | **Not required** for this variant | Skip the MooseFS slowness |

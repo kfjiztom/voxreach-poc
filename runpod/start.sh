@@ -6,6 +6,7 @@ set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PP_VENV="${PP_VENV:-/opt/voxreach-personaplex}"
+PERSONAPLEX_REPO="${PERSONAPLEX_REPO:-/opt/personaplex}"
 SIDECAR_VENV="${POC_DIR}/sidecar/.venv"
 
 SESSION="voxreach"
@@ -43,15 +44,20 @@ WEB_PORT="${WEB_PORT:-3001}"
 echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
 # Window 1: PersonaPlex full-duplex speech server
+# - NVIDIA's moshi fork auto-loads PersonaPlex weights — no --hf-repo needed.
+# - No --ssl: RunPod's proxy already wraps the port in HTTPS, so internal HTTP
+#   is fine. Browser mic still works because the public URL is https://*.proxy.runpod.net.
+# - cd into the personaplex repo so any relative asset paths (NATF*.pt voice
+#   prompts in assets/) resolve correctly.
 tmux new-session -d -s "${SESSION}" -n personaplex "
   source ${PP_VENV}/bin/activate;
+  cd ${PERSONAPLEX_REPO};
   export HF_HOME=${HF_HOME};
   export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
   export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
   export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN};
-  echo '[personaplex] starting nvidia/personaplex-7b-v1 on :${PERSONAPLEX_PORT}';
-  SSL_DIR=\$(mktemp -d);
-  python -m moshi.server --hf-repo nvidia/personaplex-7b-v1 --ssl \"\$SSL_DIR\" --port ${PERSONAPLEX_PORT}
+  echo '[personaplex] starting on :${PERSONAPLEX_PORT}';
+  python -m moshi.server --host 0.0.0.0 --port ${PERSONAPLEX_PORT}
 "
 
 # Window 2: Sidecar (transcript watcher, intent extraction, POS stub)

@@ -15,6 +15,7 @@ POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Onboard install paths (no network volume dependency)
 PP_VENV="${PP_VENV:-/opt/voxreach-personaplex}"
 SIDECAR_VENV="${POC_DIR}/sidecar/.venv"
+PERSONAPLEX_REPO="${PERSONAPLEX_REPO:-/opt/personaplex}"
 
 export HF_HOME="${HF_HOME:-/root/.cache/huggingface}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
@@ -22,6 +23,7 @@ export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/root/.cache/pip}"
 
 echo "==> POC dir:           ${POC_DIR}"
+echo "==> PersonaPlex repo:  ${PERSONAPLEX_REPO}"
 echo "==> PersonaPlex venv:  ${PP_VENV}"
 echo "==> Sidecar venv:      ${SIDECAR_VENV}"
 echo "==> HF cache:          ${HF_HOME}"
@@ -94,7 +96,20 @@ pip install --quiet \
 deactivate
 
 # ---------------------------------------------------------------------------
-# PersonaPlex venv — moshi package + huggingface_hub + hf_transfer
+# Clone NVIDIA/personaplex repo (the moshi fork with PersonaPlex defaults)
+# ---------------------------------------------------------------------------
+echo ""
+if [ ! -d "${PERSONAPLEX_REPO}" ]; then
+  echo "==> Cloning NVIDIA/personaplex to ${PERSONAPLEX_REPO} ..."
+  mkdir -p "$(dirname "${PERSONAPLEX_REPO}")"
+  git clone https://github.com/NVIDIA/personaplex "${PERSONAPLEX_REPO}"
+else
+  echo "==> NVIDIA/personaplex already cloned at ${PERSONAPLEX_REPO}, pulling latest ..."
+  (cd "${PERSONAPLEX_REPO}" && git pull --ff-only) || true
+fi
+
+# ---------------------------------------------------------------------------
+# PersonaPlex venv — install NVIDIA's fork of moshi (NOT PyPI's vanilla moshi)
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Setting up PersonaPlex venv at ${PP_VENV} ..."
@@ -105,7 +120,12 @@ fi
 # shellcheck disable=SC1091
 source "${PP_VENV}/bin/activate"
 pip install --quiet --upgrade pip
-pip install --quiet moshi huggingface_hub hf_transfer
+# Install NVIDIA's moshi fork from the cloned repo. The trailing /. matters —
+# it tells pip "install from the local moshi/ subdirectory of the repo".
+echo "==> Installing NVIDIA moshi fork from ${PERSONAPLEX_REPO}/moshi ..."
+(cd "${PERSONAPLEX_REPO}" && pip install --quiet "moshi/.")
+# Companion deps for weight downloads + optional CPU offload
+pip install --quiet huggingface_hub hf_transfer accelerate
 
 # Quick CUDA sanity — fail fast if torch can't talk to the GPU
 python - <<'PY'
@@ -113,7 +133,7 @@ import torch
 print(f"   torch       {torch.__version__}")
 print(f"   cuda        {torch.cuda.is_available()}")
 if not torch.cuda.is_available():
-    raise SystemExit("ERROR: torch.cuda.is_available() is False — check pod GPU")
+    raise SystemExit("ERROR: torch.cuda.is_available() is False — wrong CUDA wheels for this pod's driver")
 print(f"   GPU         {torch.cuda.get_device_name(0)}")
 print(f"   VRAM        {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 PY
