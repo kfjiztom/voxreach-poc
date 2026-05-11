@@ -1,124 +1,143 @@
-# RunPod bring-up — VoxReach POC
+# RunPod bring-up — VoxReach POC (PersonaPlex variant)
 
 The whole demo runs on a single RunPod GPU pod. The frontend can also be developed offline (Mac), but the live audio demo needs the pod.
+
+> **Active stack:** NVIDIA PersonaPlex (`nvidia/personaplex-7b-v1`), single AI service, NVIDIA Open Model License.
+> **Parked stack:** MoshiRAG + vLLM (Phase B target — see `git log` for previous variants).
 
 ## 1. Pod template
 
 | Setting | Value | Notes |
 |---|---|---|
-| GPU | **A100 80GB PCIe** (or **H100 80GB**) | 80 GB is the floor — Moshi-RAG ~16 GB + Gemma-3-12B retrieval LLM ~24 GB + headroom |
-| Template | RunPod `PyTorch 2.4.0 · py3.12 · cuda 12.4` | Or any image with CUDA 12.x + Python ≥ 3.10 |
-| Container disk | 20 GB (RunPod default — fine, **do not raise**) | Holds the OS + base PyTorch only; weights go on the network volume below |
-| **Network volume** | **80 GB**, attached at `/workspace` | Persists across pod destruction; survives spot interruptions |
-| Exposed ports | `8998` (Moshi), `8001` (sidecar), `3001` (web) | RunPod will assign public proxied URLs |
+| GPU | **A100 80GB PCIe** (or **H100 80GB**) | PersonaPlex needs ~14 GB VRAM; A100 80GB has plenty of headroom |
+| Template | RunPod `PyTorch 2.4.0 · py3.12 · cuda 12.4` (or newer) | CUDA 12.x required |
+| Container disk | **30 GB** (default on most templates) | Holds OS + base PyTorch + venvs + weights — onboard storage, no network volume needed |
+| Network volume | **Not required** for this variant | Skip the MooseFS slowness |
+| Exposed ports | `8998` (PersonaPlex), `8001` (sidecar), `3001` (web) | RunPod assigns public proxied URLs |
 | Env | `HF_TOKEN=hf_...` | Set in the pod's secrets, do not bake into the image |
 | SSH | Enabled | Required for the bring-up |
 
-Region: pick one with A100 80GB spot availability AND network-volume support — `us-ks-2`, `us-ca-2`, or `eu-ro-1` usually green in 2026. Spot is fine for development; switch to on-demand for live investor calls.
+Region: any with A100 80GB stock — `us-ks-2`, `us-ca-2`, or `eu-ro-1` usually green.
 
-> **Critical:** RunPod's container disk is 20 GB and **ephemeral**. The HF + pip caches default to `~/.cache/X` which lives on that disk. Without redirecting them to `/workspace`, the 38 GB model-weight download fills the container disk halfway through and fails with `no space left on device`. The `setup.sh` script handles this redirect automatically — but if you ever run `pip install` or `huggingface-cli download` outside the script, **first** run:
->
-> ```bash
-> export HF_HOME=/workspace/.cache/huggingface
-> export PIP_CACHE_DIR=/workspace/.cache/pip
-> ```
+## 2. License acceptance (one-time, on your laptop)
 
-## 2. One-time setup (per pod)
+1. Visit [huggingface.co/nvidia/personaplex-7b-v1](https://huggingface.co/nvidia/personaplex-7b-v1)
+2. Sign in with the same HF account that owns your `HF_TOKEN`
+3. Click **Agree and access repository**
+
+This is account-level — you only do it once across all your RunPod work.
+
+## 3. One-time setup (per pod)
 
 SSH into the pod, then:
 
 ```bash
-# 1. Clone the POC into the pod
-git clone <YOUR_REPO_URL_HOSTING_THIS_POC> /workspace/voxreach-poc
-cd /workspace/voxreach-poc/poc
+# 1. Install gh CLI (if not already)
+apt-get update && apt-get install -y gh
 
-# 2. Run the setup script (installs system deps + clones moshi-rag + pulls model weights)
-bash runpod/setup.sh
+# 2. Auth (device-code flow — paste code at github.com/login/device on your laptop)
+gh auth login --hostname github.com --git-protocol https --web
+
+# 3. Clone the POC anywhere on local disk
+cd /opt
+gh repo clone kfjiztom/voxreach-poc
+cd voxreach-poc
+
+# 4. Make sure HF_TOKEN is exported
+echo "HF_TOKEN length: ${#HF_TOKEN}"
+
+# 5. Run setup inside tmux so SSH disconnect doesn't kill it
+tmux new -s setup
+bash runpod/setup.sh 2>&1 | tee /root/setup.log
+# Detach: Ctrl+b then d. Reattach later: tmux attach -t setup.
 ```
 
 The setup script will:
-- **Redirect HF + pip caches to `/workspace`** so they don't fill the 20 GB container disk
-- **Persist those env vars to `~/.bashrc`** so future shells inherit them
-- **Symlink** `/root/.cache/{huggingface,pip}` → `/workspace/.cache/{huggingface,pip}` for tools that ignore env vars
-- `apt install libopus-dev ffmpeg tmux jq curl git` and clean apt cache
-- **Upgrade pip** (RunPod base images often ship a 2024-era pip with vulnerability warnings)
-- Create `poc/sidecar/.venv` and install lightweight Python deps (FastAPI, uvicorn, sse-starlette, etc.)
-- **Create heavy ML venv at `/workspace/.venv/voxreach`** — moshi-rag + vLLM + torch family go HERE, not into system site-packages on `/`. Roughly 6 GB of packages that would otherwise eat the container disk.
-- Clone `kyutai-labs/moshi-rag` into `/workspace/moshi-rag`
-- `pip install` moshi-rag into the ML venv (which pulls torch 2.9.x as a transitive dep)
-- **Realign torchaudio + torchvision** to match the now-installed torch — without this, the pre-baked torchaudio 2.4.1 silently fails at runtime
-- Install vLLM into the ML venv
-- Pre-download `kyutai/moshika-rag-pytorch-bf16` and `google/gemma-3-12b-it` weights to `/workspace/.cache/huggingface` (~38 GB)
+- Set up onboard cache locations (`/root/.cache/huggingface`, `/root/.cache/pip`)
+- `apt install libopus-dev ffmpeg tmux jq curl git`
+- Upgrade pip
+- Create sidecar venv at `<repo>/sidecar/.venv` and install FastAPI + uvicorn deps
+- Create PersonaPlex venv at `/opt/voxreach-personaplex` and install `moshi`, `huggingface_hub`, `hf_transfer`
+- Verify CUDA works (fails fast if not)
+- Pre-download `nvidia/personaplex-7b-v1` weights (~14 GB, 5-8 min on RunPod bandwidth)
 - Install Node 20 + run `npm ci` for the web app
-- Print final `df -h` so you can confirm `/` stayed small and `/workspace` got the bytes
+- Print final disk usage
 
-Expect 15–25 minutes for first-run weight downloads.
+Total: ~10-15 minutes on a fresh pod.
 
-If your pod has a CUDA driver newer than 12.4 (e.g. cu126, cu128, cu130), override the wheel index before running:
-
-```bash
-export CUDA_INDEX_URL=https://download.pytorch.org/whl/cu128   # or cu126, cu130
-bash runpod/setup.sh
-```
-
-## 3. Start the stack
+## 4. Start the stack
 
 ```bash
-cd /workspace/voxreach-poc/poc
+cd /opt/voxreach-poc
 bash runpod/start.sh
+tmux attach -t voxreach
 ```
 
-This spawns four services in named `tmux` windows (so you can `tmux attach` and see logs):
+This spawns three tmux windows:
 
 | Window | Service | Port | Purpose |
 |---|---|---|---|
-| `vllm` | vLLM serving `google/gemma-3-12b-it` | 8002 | Retrieval back-end LLM |
-| `moshi` | `python -m moshi.moshi.server --hf-repo kyutai/moshika-rag-pytorch-bf16` | 8998 | Full-duplex speech model + built-in audio path |
-| `sidecar` | uvicorn FastAPI on `sidecar/app.py` | 8001 | Transcript watcher · POS stub · SSE |
-| `web` | `next start` (or `next dev` for hot reload) | 3001 | The branded 2-pane demo UI |
+| `personaplex` | `python -m moshi.server --hf-repo nvidia/personaplex-7b-v1` | 8998 | Full-duplex S2S — the AI |
+| `sidecar` | uvicorn FastAPI on `sidecar/app.py` | 8001 | Transcript watcher + POS stub + SSE |
+| `web` | `next start` | 3001 | The branded 2-pane demo UI |
 
-`start.sh` waits for vLLM to be healthy before launching moshi-rag (moshi-rag will retry retrieval calls but cleaner to start in order).
+Use `Ctrl+b 0/1/2` to switch between windows.
 
-## 4. Verify
+## 5. Verify
 
-From your laptop, open RunPod's public-proxy URL for **port 3001** — that's the Hearth & Pass demo page. You should see:
-
-1. Left pane: "Call Hearth & Pass", idle state, "Start call" button
-2. Right pane: empty backstage panels with placeholder copy
-
-Click **Start call**, grant mic access, say *"Can I place an order?"* — within ~1–2 seconds Vox should reply.
-
-## 5. Demo modes
-
-Two environment overrides on the **web** service control what the frontend talks to:
+Once all three windows show their startup banners, in another SSH session:
 
 ```bash
-# Mock mode (default — works without GPU, for laptop dev or fallback demo):
-NEXT_PUBLIC_MOCK_MODE=true
+echo "=== ports ==="
+ss -tlnp 2>/dev/null | grep -E ":3001|:8001|:8998"
 
-# Live mode (real Moshi audio on the pod):
-NEXT_PUBLIC_MOCK_MODE=false
+echo "=== personaplex health ==="
+curl -sk https://localhost:8998 | head -5
+
+echo "=== sidecar health ==="
+curl -s http://localhost:8001/api/state
+
+echo "=== web health ==="
+curl -sw "%{http_code}\n" -o /dev/null http://localhost:3001/
 ```
 
-In live mode, `Start call` opens a WebSocket to the Moshi server on port 8998 and uses its native audio plumbing (forked from `kyutai-labs/moshi-rag` client). The sidecar still drives the right-pane backstage panels — it subscribes to Moshi's transcript stream.
+Web should return 200, sidecar should return JSON or `null`, personaplex should return its index page.
 
-## 6. Cost expectations
+## 6. Open the demo in a browser
 
-| Item | $/hr | Notes |
-|---|---|---|
-| A100 80GB PCIe spot (RunPod) | ~$1.19 | Spot — interruptible, cheap |
-| A100 80GB PCIe on-demand | ~$1.89 | Use on-demand for live investor calls |
-| H100 80GB PCIe on-demand | ~$2.49 | Alternative; slightly faster |
-| Storage (80 GB persistent) | ~$0.08/hr | Keeps weights warm between sessions |
+In the RunPod console, click your pod's **Connect** tab and find port **3001** (HTTP). Open the proxied URL — that's the Hearth & Pass demo page. Grant mic permission and start a call.
 
-**Stop the pod when you're not demoing.** Persistent volume keeps weights — next bring-up is a 2-minute boot, not a 25-minute download.
+## 7. Cost expectations
 
-## 7. Troubleshooting
+| Item | $/hr |
+|---|---|
+| A100 80GB PCIe spot (RunPod) | ~$1.19 |
+| A100 80GB PCIe on-demand | ~$1.89 |
+| Container disk only (no network volume) | included |
+
+**Stop the pod when you're not demoing.** Without a network volume, restart means re-downloading the 14 GB weights — call it 5-8 min on a fresh pod. Trade-off accepted for simpler setup.
+
+## 8. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Moshi server OOMs at startup | vLLM ate too much VRAM | Lower vLLM `--gpu-memory-utilization` to 0.55 |
-| First-audio latency > 2 s consistently | Cold weights | Confirm `--preload` flag in `start.sh`; re-run |
-| Sidecar SSE drops every ~60s | RunPod's HTTP proxy idle timeout | Use raw TCP port-forward via `ssh -L 8001:localhost:8001` instead of the proxy |
+| `setup.sh` exits at HF check | `HF_TOKEN` not exported | `export HF_TOKEN=hf_...` and re-run |
+| `setup.sh` exits at CUDA check | torch can't talk to GPU | check `nvidia-smi`; pod GPU may not be initialized |
+| PersonaPlex 401 on weight pull | License not accepted on HF page | accept at huggingface.co/nvidia/personaplex-7b-v1, retry |
+| Sidecar `ModuleNotFoundError` | sidecar venv didn't get created | `cd sidecar && bash run.sh` (it creates the venv) |
+| Web `next: not found` | npm ci didn't run | `cd web && npm ci` |
 | Browser can't connect to mic | RunPod proxy is HTTP not HTTPS | Use `https://` URL from RunPod console — Chrome blocks mic on `http://` |
-| `huggingface-cli: 403` on weights | Forgot to accept the license | Visit `https://huggingface.co/kyutai/moshika-rag-pytorch-bf16` in browser → "Agree" |
+| `df -h /` shows >85% on container disk | weights downloaded successfully but OS overhead is high | check `du -sh /var/lib/docker /var/cache/apt` and clean if huge |
+
+## 9. Why we parked MoshiRAG
+
+Original plan was MoshiRAG (Moshi + asynchronous RAG) + vLLM serving Gemma-3-12B as the retrieval back-end. Spent significant time hitting cascading dependency conflicts on RunPod: torch CUDA wheel mismatches (cu124 vs cu128 vs cu130), vLLM/moshi/transformers/xformers version incompatibilities, MooseFS network-FS install slowness.
+
+Pivoted to PersonaPlex for the POC because:
+- One service instead of three
+- One model weights repo (no separate retrieval LLM)
+- No torch/vllm/transformers dep coordination
+- Voice quality identical (same Moshi underneath)
+- Faster iteration to a working demo
+
+MoshiRAG remains the Phase B production architecture per `VoxReach_Internal_Infra_Plan.md`. Revisit when MoshiRAG packaging matures.

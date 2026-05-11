@@ -1,69 +1,43 @@
 #!/usr/bin/env bash
-# RunPod one-time setup for the VoxReach POC.
-# Run from /workspace/voxreach-poc/poc after cloning the repo.
+# RunPod one-time setup for the VoxReach POC (PersonaPlex variant).
 #
-# Critical: RunPod's container disk is only 20 GB. The HF + pip caches default
-# to ~/.cache/X which lives on that disk. Without redirecting them to the
-# network volume at /workspace, the model weight downloads will run out of
-# space mid-stream. This script handles that automatically.
+# Simpler than the parked MoshiRAG variant — single AI service, no vLLM,
+# no separate retrieval LLM, no torch/vllm/transformers dep cascade.
+#
+# Storage: onboard (container disk + /root) for speed. PersonaPlex weights
+# (~14 GB) + venvs (~5 GB) + base image (~12 GB) fit comfortably on RunPod's
+# default 30 GB container disk.
 
 set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# WORKSPACE = where the RunPod network volume is mounted. Convention is /workspace.
-# Override only if your pod is configured differently.
-WORKSPACE="${WORKSPACE:-/workspace}"
-MOSHI_DIR="${WORKSPACE}/moshi-rag"
 
-if [ ! -d "${WORKSPACE}" ]; then
-  echo "!! ${WORKSPACE} does not exist. Either your network volume isn't mounted,"
-  echo "   or you need to override WORKSPACE=<path> before running this script."
-  exit 1
-fi
+# Onboard install paths (no network volume dependency)
+PP_VENV="${PP_VENV:-/opt/voxreach-personaplex}"
+SIDECAR_VENV="${POC_DIR}/sidecar/.venv"
 
-# CUDA wheel index for the torch/torchaudio/torchvision realignment step.
-# Auto-detected from the pod's NVIDIA driver below — see "Auto-detect CUDA"
-# section. Set CUDA_INDEX_URL explicitly to override the auto-detection.
-CUDA_INDEX_URL="${CUDA_INDEX_URL:-}"
-
-echo "==> POC dir:        ${POC_DIR}"
-echo "==> Workspace dir:  ${WORKSPACE}"
-echo "==> Moshi-RAG dir:  ${MOSHI_DIR}"
-echo "==> CUDA wheel idx: ${CUDA_INDEX_URL}"
-
-# ---------------------------------------------------------------------------
-# Cache redirect: keep big caches on /workspace, NOT on the 20 GB container disk.
-# ---------------------------------------------------------------------------
-echo ""
-echo "==> Redirecting HF + pip caches to /workspace ..."
-export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
+export HF_HOME="${HF_HOME:-/root/.cache/huggingface}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
-export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/workspace/.cache/pip}"
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/root/.cache/pip}"
+
+echo "==> POC dir:           ${POC_DIR}"
+echo "==> PersonaPlex venv:  ${PP_VENV}"
+echo "==> Sidecar venv:      ${SIDECAR_VENV}"
+echo "==> HF cache:          ${HF_HOME}"
+echo "==> pip cache:         ${PIP_CACHE_DIR}"
+
 mkdir -p "${HF_HOME}" "${PIP_CACHE_DIR}"
 
-# Move any existing caches off the container disk
-mkdir -p /root/.cache
-for sub in huggingface pip; do
-  src="/root/.cache/${sub}"
-  dst="/workspace/.cache/${sub}"
-  if [ -d "${src}" ] && [ ! -L "${src}" ]; then
-    echo "    moving ${src} → ${dst}"
-    cp -a "${src}/." "${dst}/" 2>/dev/null || true
-    rm -rf "${src}"
-  fi
-  ln -sfn "${dst}" "${src}"
-done
-
-# Persist for every future shell on this pod
+# Persist cache locations for every shell on this pod
 if ! grep -q 'VoxReach POC cache redirects' ~/.bashrc 2>/dev/null; then
   cat >> ~/.bashrc <<'EOF'
 
-# VoxReach POC cache redirects — keep big caches off the 20 GB container disk
-export HF_HOME=/workspace/.cache/huggingface
-export HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface
-export TRANSFORMERS_CACHE=/workspace/.cache/huggingface
-export PIP_CACHE_DIR=/workspace/.cache/pip
+# VoxReach POC cache redirects (PersonaPlex variant — onboard storage)
+export HF_HOME=/root/.cache/huggingface
+export HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
+export TRANSFORMERS_CACHE=/root/.cache/huggingface
+export PIP_CACHE_DIR=/root/.cache/pip
 EOF
 fi
 
@@ -83,33 +57,32 @@ rm -rf /var/lib/apt/lists/*
 echo ""
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "!! HF_TOKEN is not set in this pod's environment."
-  echo "   1. Generate a token at https://huggingface.co/settings/tokens (read access)."
-  echo "   2. Accept the license on https://huggingface.co/kyutai/moshika-rag-pytorch-bf16"
-  echo "   3. Accept the license on https://huggingface.co/google/gemma-3-12b-it"
-  echo "   4. Set HF_TOKEN as a secret on this RunPod pod, then re-run this script."
+  echo "   1. Generate a token at https://huggingface.co/settings/tokens"
+  echo "   2. Accept the license at https://huggingface.co/nvidia/personaplex-7b-v1"
+  echo "   3. Set HF_TOKEN as a secret on this RunPod pod, then re-run this script."
   exit 1
 fi
 export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 echo "==> HF_TOKEN is set (length=${#HF_TOKEN})"
 
 # ---------------------------------------------------------------------------
-# Upgrade pip globally — base RunPod images often ship with pip from 2024.
+# Upgrade pip globally
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Upgrading pip ..."
 python3 -m pip install --quiet --upgrade pip
 
 # ---------------------------------------------------------------------------
-# Python venv + sidecar deps
+# Sidecar venv (lightweight — FastAPI + uvicorn + sse_starlette)
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Setting up Python venv for sidecar ..."
-cd "${POC_DIR}/sidecar"
-if [ ! -d .venv ]; then
-  python3 -m venv .venv
+echo "==> Setting up sidecar venv at ${SIDECAR_VENV} ..."
+mkdir -p "$(dirname "${SIDECAR_VENV}")"
+if [ ! -d "${SIDECAR_VENV}" ]; then
+  python3 -m venv "${SIDECAR_VENV}"
 fi
 # shellcheck disable=SC1091
-source .venv/bin/activate
+source "${SIDECAR_VENV}/bin/activate"
 pip install --quiet --upgrade pip
 pip install --quiet \
   "fastapi>=0.115" \
@@ -121,139 +94,40 @@ pip install --quiet \
 deactivate
 
 # ---------------------------------------------------------------------------
-# Heavy ML venv on /workspace — moshi-rag + vLLM + their torch family.
-#
-# Without this, `pip install` as root with no venv would dump 6+ GB of
-# packages into /usr/lib/python3.X/site-packages on the 20 GB container disk.
-# Pinning the venv to /workspace keeps the container disk safe and survives
-# pod destruction (the venv stays on the network volume).
+# PersonaPlex venv — moshi package + huggingface_hub + hf_transfer
 # ---------------------------------------------------------------------------
-ML_VENV="${WORKSPACE}/.venv/voxreach"
 echo ""
-echo "==> Setting up heavy ML venv at ${ML_VENV} ..."
-mkdir -p "$(dirname "${ML_VENV}")"
-if [ ! -d "${ML_VENV}" ]; then
-  python3 -m venv "${ML_VENV}"
+echo "==> Setting up PersonaPlex venv at ${PP_VENV} ..."
+mkdir -p "$(dirname "${PP_VENV}")"
+if [ ! -d "${PP_VENV}" ]; then
+  python3 -m venv "${PP_VENV}"
 fi
 # shellcheck disable=SC1091
-source "${ML_VENV}/bin/activate"
+source "${PP_VENV}/bin/activate"
 pip install --quiet --upgrade pip
-# hf_transfer enables HF_HUB_ENABLE_HF_TRANSFER=1 fast downloads (~3x).
-# RunPod images often set that env var; without the package, downloads error.
-pip install --quiet huggingface_hub hf_transfer
+pip install --quiet moshi huggingface_hub hf_transfer
 
-# ---------------------------------------------------------------------------
-# Moshi-RAG clone + install (into the ML venv on /workspace)
-# ---------------------------------------------------------------------------
-echo ""
-if [ ! -d "${MOSHI_DIR}" ]; then
-  echo "==> Cloning kyutai-labs/moshi-rag ..."
-  git clone https://github.com/kyutai-labs/moshi-rag "${MOSHI_DIR}"
-fi
-echo "==> Installing moshi-rag Python package into ${ML_VENV} ..."
-cd "${MOSHI_DIR}"
-pip install --quiet -U "git+https://github.com/kyutai-labs/moshi-rag.git#egg=moshi&subdirectory=moshi"
-pip install --quiet rustymimi
-
-# ---------------------------------------------------------------------------
-# Realign torchaudio + torchvision to whatever torch moshi-rag pulled in.
-# Without this you get a runtime error: torchaudio pinned to torch 2.4.1 but
-# torch is now 2.9.x.
-# ---------------------------------------------------------------------------
-# Auto-detect CUDA wheel index from driver capability. PyPI's default torch
-# wheel may be built for a CUDA version newer than the pod's driver supports
-# (e.g. PyPI torch 2.9 → CUDA 13, but RunPod PyTorch 2.4 template → driver
-# CUDA 12.8). Use the closest cu1XX index ≤ driver's max CUDA.
-if [ -z "${CUDA_INDEX_URL}" ]; then
-  DRV_CUDA=$(nvidia-smi 2>/dev/null | grep -oE "CUDA Version: [0-9]+\.[0-9]+" | awk '{print $3}')
-  if [ -n "${DRV_CUDA}" ]; then
-    DRV_MAJ=$(echo "${DRV_CUDA}" | cut -d. -f1)
-    DRV_MIN=$(echo "${DRV_CUDA}" | cut -d. -f2)
-    case "${DRV_MAJ}.${DRV_MIN}" in
-      13.*)  CUDA_INDEX_URL="https://download.pytorch.org/whl/cu130" ;;
-      12.8|12.9) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu128" ;;
-      12.6|12.7) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu126" ;;
-      12.4|12.5) CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124" ;;
-      *)     CUDA_INDEX_URL="" ;;  # unknown — let pip default
-    esac
-    echo "==> Detected driver CUDA ${DRV_CUDA} → using wheel index: ${CUDA_INDEX_URL:-PyPI default}"
-  fi
-fi
-
-echo ""
-echo "==> Realigning torchaudio + torchvision to installed torch ..."
-INSTALLED_TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
-TORCH_MM=$(echo "${INSTALLED_TORCH}" | cut -d. -f1-2)
-# torchvision's minor offset from torch is +15 (torch 2.9 → torchvision 0.24).
-TORCH_MIN=$(echo "${INSTALLED_TORCH}" | cut -d. -f2)
-TV_MIN=$((TORCH_MIN + 15))
-TV_MIN_NEXT=$((TV_MIN + 1))
-TORCH_MIN_NEXT=$((TORCH_MIN + 1))
-
-echo "    torch is at ${INSTALLED_TORCH} — pinning audio to ${TORCH_MM}.x and vision to 0.${TV_MIN}.x"
-PIP_ARGS=(
-  --upgrade --force-reinstall
-  "torch==${INSTALLED_TORCH}"
-  "torchaudio>=${TORCH_MM},<2.${TORCH_MIN_NEXT}"
-  "torchvision>=0.${TV_MIN},<0.${TV_MIN_NEXT}"
-)
-if [ -n "${CUDA_INDEX_URL}" ]; then
-  echo "    using PyTorch wheel index: ${CUDA_INDEX_URL}"
-  pip install --index-url "${CUDA_INDEX_URL}" "${PIP_ARGS[@]}"
-else
-  pip install "${PIP_ARGS[@]}"
-fi
-
-# Sanity check CUDA actually works (would catch wrong wheel index)
+# Quick CUDA sanity — fail fast if torch can't talk to the GPU
 python - <<'PY'
 import torch
-if not torch.cuda.is_available():
-    raise SystemExit("ERROR: torch.cuda.is_available() is False after install — wrong CUDA wheel index?")
 print(f"   torch       {torch.__version__}")
-print(f"   cuda        OK ({torch.cuda.get_device_name(0)})")
-PY
-
-python - <<'PY'
-import torch, torchaudio, torchvision
-print(f"   torch       {torch.__version__}")
-print(f"   torchaudio  {torchaudio.__version__}")
-print(f"   torchvision {torchvision.__version__}")
 print(f"   cuda        {torch.cuda.is_available()}")
-assert torch.cuda.is_available(), "CUDA not available — check pod GPU and CUDA_INDEX_URL"
+if not torch.cuda.is_available():
+    raise SystemExit("ERROR: torch.cuda.is_available() is False — check pod GPU")
+print(f"   GPU         {torch.cuda.get_device_name(0)}")
+print(f"   VRAM        {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 PY
 
 # ---------------------------------------------------------------------------
-# Pin numpy BEFORE vLLM install so vLLM's compiled extensions match.
-# vLLM otherwise pulls numpy 2.4, but moshi requires numpy<2.3 — and
-# downgrading numpy AFTER vLLM is built breaks vLLM's C-extension ABI.
+# Pre-pull PersonaPlex weights
 # ---------------------------------------------------------------------------
 echo ""
-echo "==> Pinning numpy to >=1.26,<2.3 (satisfies both moshi and vLLM) ..."
-pip install --quiet --upgrade "numpy>=1.26,<2.3"
-
-# ---------------------------------------------------------------------------
-# vLLM (retrieval backend) — also into the ML venv
-# ---------------------------------------------------------------------------
-echo ""
-echo "==> Installing vLLM into ${ML_VENV} ..."
-pip install --quiet "vllm>=0.6.4" "numpy>=1.26,<2.3"
-
-# ---------------------------------------------------------------------------
-# Pre-pull weights (so first start.sh is fast) — runs inside ML venv
-# ---------------------------------------------------------------------------
-echo ""
-echo "==> Pre-downloading model weights to ${HF_HOME} (this is the long step) ..."
+echo "==> Pre-downloading PersonaPlex weights to ${HF_HOME} (~14 GB) ..."
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
-
-token = os.environ["HUGGING_FACE_HUB_TOKEN"]
-for repo in [
-    "kyutai/moshika-rag-pytorch-bf16",
-    "google/gemma-3-12b-it",
-]:
-    print(f"   pulling {repo} ...")
-    snapshot_download(repo_id=repo, token=token)
+print("   pulling nvidia/personaplex-7b-v1 ...")
+snapshot_download(repo_id="nvidia/personaplex-7b-v1", token=os.environ["HUGGING_FACE_HUB_TOKEN"])
 print("   done.")
 PY
 
@@ -275,6 +149,6 @@ npm ci --silent
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Disk usage after setup:"
-df -h / /workspace 2>/dev/null | grep -E 'Filesystem|/$|/workspace'
+df -h / 2>/dev/null | head -2
 echo ""
 echo "==> Setup complete. Next: bash runpod/start.sh"

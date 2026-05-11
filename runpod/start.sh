@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
-# Start the four services for the VoxReach POC inside a tmux session.
+# Start the three services for the VoxReach POC (PersonaPlex variant) in tmux.
 # Attach with:  tmux attach -t voxreach
 
 set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="${WORKSPACE:-/workspace}"
-MOSHI_DIR="${WORKSPACE}/moshi-rag"
-ML_VENV="${WORKSPACE}/.venv/voxreach"
+PP_VENV="${PP_VENV:-/opt/voxreach-personaplex}"
+SIDECAR_VENV="${POC_DIR}/sidecar/.venv"
 
 SESSION="voxreach"
-
-if [ ! -d "${ML_VENV}" ]; then
-  echo "!! ML venv not found at ${ML_VENV}. Run setup.sh first."
-  exit 1
-fi
-
-# Ensure cache redirects are exported into every tmux window we spawn
-export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
-export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
-export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/workspace/.cache/pip}"
 
 if tmux has-session -t "${SESSION}" 2>/dev/null; then
   echo "==> tmux session '${SESSION}' already running. Attach with 'tmux attach -t ${SESSION}'."
   echo "    To restart, run: tmux kill-session -t ${SESSION} && bash $0"
   exit 0
+fi
+
+if [ ! -d "${PP_VENV}" ]; then
+  echo "!! PersonaPlex venv not found at ${PP_VENV}. Run setup.sh first."
+  exit 1
+fi
+if [ ! -d "${SIDECAR_VENV}" ]; then
+  echo "!! Sidecar venv not found at ${SIDECAR_VENV}. Run setup.sh first."
+  exit 1
 fi
 
 if [ -z "${HF_TOKEN:-}" ]; then
@@ -34,54 +31,37 @@ if [ -z "${HF_TOKEN:-}" ]; then
 fi
 export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 
-VLLM_PORT="${VLLM_PORT:-8002}"
-MOSHI_PORT="${MOSHI_PORT:-8998}"
+# Cache redirects (in case shell wasn't sourced from .bashrc)
+export HF_HOME="${HF_HOME:-/root/.cache/huggingface}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}}"
+
+PERSONAPLEX_PORT="${PERSONAPLEX_PORT:-8998}"
 SIDECAR_PORT="${SIDECAR_PORT:-8001}"
 WEB_PORT="${WEB_PORT:-3001}"
 
-echo "==> Starting tmux session '${SESSION}' with 4 windows."
+echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
-# Window 1: vLLM retrieval backend (uses the ML venv on /workspace)
-tmux new-session -d -s "${SESSION}" -n vllm "
-  source ${ML_VENV}/bin/activate;
+# Window 1: PersonaPlex full-duplex speech server
+tmux new-session -d -s "${SESSION}" -n personaplex "
+  source ${PP_VENV}/bin/activate;
   export HF_HOME=${HF_HOME};
   export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
   export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
-  echo '[vllm] starting Gemma-3-12B on :${VLLM_PORT}';
-  python -m vllm.entrypoints.openai.api_server \
-    --model google/gemma-3-12b-it \
-    --port ${VLLM_PORT} \
-    --gpu-memory-utilization 0.55 \
-    --max-model-len 4096
-"
-
-# Window 2: Moshi-RAG full-duplex speech server (same ML venv)
-tmux new-window -t "${SESSION}" -n moshi "
-  source ${ML_VENV}/bin/activate;
-  export HF_HOME=${HF_HOME};
-  export HUGGINGFACE_HUB_CACHE=${HUGGINGFACE_HUB_CACHE};
-  export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
-  cd ${MOSHI_DIR};
-  echo '[moshi] waiting for vLLM ...';
-  until curl -fs http://localhost:${VLLM_PORT}/v1/models >/dev/null; do sleep 2; done;
-  echo '[moshi] vLLM ready, launching moshi server';
-  export LLM_BASE_URL=http://localhost:${VLLM_PORT}/v1;
-  export SYSTEM_PROMPT_FILE=${POC_DIR}/persona/vox_system_prompt.md;
-  export KNOWLEDGE_FILE=${POC_DIR}/knowledge/hearth_and_pass.json;
-  export SIDECAR_URL=http://localhost:${SIDECAR_PORT};
+  export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN};
+  echo '[personaplex] starting nvidia/personaplex-7b-v1 on :${PERSONAPLEX_PORT}';
   SSL_DIR=\$(mktemp -d);
-  python -m moshi.moshi.server --hf-repo kyutai/moshika-rag-pytorch-bf16 --ssl \"\$SSL_DIR\" --port ${MOSHI_PORT}
+  python -m moshi.server --hf-repo nvidia/personaplex-7b-v1 --ssl \"\$SSL_DIR\" --port ${PERSONAPLEX_PORT}
 "
 
-# Window 3: Sidecar
+# Window 2: Sidecar (transcript watcher, intent extraction, POS stub)
 tmux new-window -t "${SESSION}" -n sidecar "
   cd ${POC_DIR}/sidecar;
-  source .venv/bin/activate;
   echo '[sidecar] starting on :${SIDECAR_PORT}';
   SIDECAR_PORT=${SIDECAR_PORT} bash run.sh
 "
 
-# Window 4: Web
+# Window 3: Web (Next.js)
 tmux new-window -t "${SESSION}" -n web "
   cd ${POC_DIR}/web;
   echo '[web] building and starting on :${WEB_PORT}';
@@ -96,6 +76,6 @@ echo "    Attach:  tmux attach -t ${SESSION}"
 echo "    Kill:    tmux kill-session -t ${SESSION}"
 echo ""
 echo "==> Public URLs (via RunPod proxy):"
-echo "    Web demo:   https://<POD-ID>-${WEB_PORT}.proxy.runpod.net"
-echo "    Moshi UI:   https://<POD-ID>-${MOSHI_PORT}.proxy.runpod.net (fallback, raw client)"
-echo "    Sidecar:    https://<POD-ID>-${SIDECAR_PORT}.proxy.runpod.net/api/state"
+echo "    Web demo:        https://<POD-ID>-${WEB_PORT}.proxy.runpod.net"
+echo "    PersonaPlex UI:  https://<POD-ID>-${PERSONAPLEX_PORT}.proxy.runpod.net (raw fallback)"
+echo "    Sidecar:         https://<POD-ID>-${SIDECAR_PORT}.proxy.runpod.net/api/state"

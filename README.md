@@ -1,12 +1,14 @@
 # VoxReach POC — Hearth & Pass demo
 
-A working proof-of-concept of the VoxReach AI receptionist, built on the **Kyutai MoshiRAG** open-weights stack. The demo persona is **Hearth & Pass** (헌앤패스), a Korean restaurant in Des Moines, IA.
+A working proof-of-concept of the VoxReach AI receptionist, built on **NVIDIA PersonaPlex** (the Moshi-based full-duplex S2S model). The demo persona is **Hearth & Pass** (헌앤패스), a Korean restaurant in Des Moines, IA.
 
-> **What this proves.** Full-duplex 200 ms-latency speech-to-speech, grounded in restaurant-specific knowledge via in-model RAG, with structured order extraction that mirrors a real Toast POS write — entirely on open weights, self-hosted on a single A100.
+> **What this proves.** Full-duplex sub-second-latency speech-to-speech, persona-conditioned for the restaurant context, with structured order extraction that mirrors a real Toast POS write — self-hosted on a single A100.
+
+> **Stack note.** Active POC uses PersonaPlex (NVIDIA Open Model License). The original plan and Phase B target architecture is MoshiRAG + vLLM (CC-BY-4.0, in-model RAG); see [`runpod/BRINGUP.md`](runpod/BRINGUP.md) §9 for the pivot history. Frontend, sidecar, persona, and POS-write story are unchanged across the swap.
 
 ---
 
-## Architecture
+## Architecture (PersonaPlex variant — current)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -14,7 +16,7 @@ A working proof-of-concept of the VoxReach AI receptionist, built on the **Kyuta
 │   ┌────────────────────┬───────────────────────────────────────┐    │
 │   │ Customer view      │ Backstage view                        │    │
 │   │  - Waveform        │  - Live order ticket                  │    │
-│   │  - Transcript      │  - RAG retrieval log                  │    │
+│   │  - Transcript      │  - Knowledge log                      │    │
 │   │  - Call controls   │  - Latency panel                      │    │
 │   │                    │  - POS write status                   │    │
 │   └────────────────────┴───────────────────────────────────────┘    │
@@ -22,23 +24,17 @@ A working proof-of-concept of the VoxReach AI receptionist, built on the **Kyuta
         │ WebSocket (audio)              │ SSE (events)
         ▼                                ▼
 ┌──────────────────────────┐    ┌────────────────────────────────────┐
-│  MoshiRAG server         │    │  FastAPI sidecar                   │
-│  python -m moshi.server  │◄──►│  - transcript ingestion            │
-│  (port 8998)             │    │  - rule-based intent extraction    │
-│  Weights:                │    │  - POS write stub (fakes Toast)    │
-│   moshika-rag-pytorch    │    │  - SSE event stream → web          │
-└──────────────────────────┘    │  - mock-scenario driver (no GPU)   │
-        │                       │  (port 8001)                       │
-        │ HTTP (OpenAI API)     └────────────────────────────────────┘
-        ▼
-┌──────────────────────────┐
-│  vLLM retrieval backend  │
-│  google/gemma-3-12b-it   │
-│  (port 8002)             │
-│  + Hearth & Pass system  │
-│    prompt + knowledge    │
-└──────────────────────────┘
+│  PersonaPlex server      │    │  FastAPI sidecar                   │
+│  python -m moshi.server  │    │  - transcript ingestion            │
+│  --hf-repo nvidia/       │    │  - rule-based intent extraction    │
+│    personaplex-7b-v1     │    │  - POS write stub (fakes Toast)    │
+│  (port 8998)             │    │  - SSE event stream → web          │
+│  Persona prompt =        │    │  - mock-scenario driver (no GPU)   │
+│   Vox @ Hearth & Pass    │    │  (port 8001)                       │
+└──────────────────────────┘    └────────────────────────────────────┘
 ```
+
+Phase B target architecture (parked) adds vLLM serving Gemma-3-12B as a separate retrieval back-end and swaps PersonaPlex for MoshiRAG. See `runpod/BRINGUP.md` §9.
 
 ## Directory layout
 
