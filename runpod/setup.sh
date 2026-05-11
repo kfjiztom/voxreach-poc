@@ -204,6 +204,12 @@ echo ""
 echo "==> Installing vLLM into ${ML_VENV} ..."
 pip install --quiet "vllm>=0.6.4"
 
+# vLLM pulls numpy 2.4 (latest) but moshi pins numpy<2.3. Pin numpy back
+# to a range that satisfies both. Without this, `import moshi` warns and
+# can fail at runtime depending on which numpy API surfaces.
+echo "==> Realigning numpy to satisfy moshi's constraint (>=1.26,<2.3) ..."
+pip install --quiet --upgrade "numpy>=1.26,<2.3"
+
 # ---------------------------------------------------------------------------
 # Pre-pull weights (so first start.sh is fast) — runs inside ML venv
 # ---------------------------------------------------------------------------
