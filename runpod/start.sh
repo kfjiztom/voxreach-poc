@@ -90,7 +90,9 @@ tmux new-session -d -s "${SESSION}" -n personaplex "
   export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE};
   export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN};
   export MOSHI_DEFAULT_TEXT_PROMPT_FILE=${DEFAULT_PROMPT_FILE};
+  export VOXREACH_SIDECAR_URL=http://localhost:${SIDECAR_PORT};
   echo '[personaplex] default prompt: ${DEFAULT_PROMPT_FILE}';
+  echo '[personaplex] sidecar URL:    http://localhost:${SIDECAR_PORT}';
   echo '[personaplex] starting on :${PERSONAPLEX_PORT}';
   python -m moshi.server --host 0.0.0.0 --port ${PERSONAPLEX_PORT}
 "

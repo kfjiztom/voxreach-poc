@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Apply VoxReach patches to NVIDIA's PersonaPlex install.
 #
-# Currently patches:
-#   1. moshi/server.py — adds MOSHI_DEFAULT_TEXT_PROMPT_FILE env-var support
-#      so the Vox/Hearth&Pass persona auto-loads when the client sends an
-#      empty text_prompt.
-#
-# Idempotent — re-running is a no-op if patches are already applied.
+# Patches applied (all idempotent — safe to re-run):
+#   1. inject_default_prompt.py — MOSHI_DEFAULT_TEXT_PROMPT_FILE override so
+#      the Vox/Hearth&Pass persona auto-loads on every connection (ignores
+#      the PersonaPlex UI's auto-filled prompt).
+#   2. inject_transcript_bridge.py — POST every call_start, call_end, and
+#      Vox text token to the VoxReach sidecar at VOXREACH_SIDECAR_URL.
+#      Enables real-time order extraction from the live conversation.
 
 set -euo pipefail
 
@@ -26,5 +27,11 @@ if [ -z "${SERVER_PY}" ]; then
 fi
 
 echo "==> Patching ${SERVER_PY}"
+echo ""
+echo "[1/2] Default text prompt override"
 "${PP_VENV}/bin/python" "${POC_DIR}/runpod/patches/inject_default_prompt.py" "${SERVER_PY}"
-echo "==> Done."
+echo ""
+echo "[2/2] Transcript bridge to sidecar"
+"${PP_VENV}/bin/python" "${POC_DIR}/runpod/patches/inject_transcript_bridge.py" "${SERVER_PY}"
+echo ""
+echo "==> All patches applied. Restart the personaplex tmux window to load the new code."
