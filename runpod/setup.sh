@@ -22,8 +22,14 @@ if [ ! -d "${WORKSPACE}" ]; then
 fi
 
 # CUDA wheel index for the torch/torchaudio/torchvision realignment step.
-# Override if your pod's CUDA driver is on a different family (cu126, cu128, cu130).
-CUDA_INDEX_URL="${CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+# By default we DON'T set one — PyPI's torch wheels for linux_x86_64 already
+# bundle CUDA via nvidia-* dependencies and pip will resolve a consistent
+# torch + torchaudio + torchvision family (currently 2.9.x).
+#
+# Set to a specific PyTorch wheel index (e.g. https://download.pytorch.org/whl/cu128)
+# only if your pod has unusual CUDA driver constraints. The cu124 index is
+# stuck on torch 2.6 and will DOWNGRADE moshi-rag's torch 2.9.1 — do not use it.
+CUDA_INDEX_URL="${CUDA_INDEX_URL:-}"
 
 echo "==> POC dir:        ${POC_DIR}"
 echo "==> Workspace dir:  ${WORKSPACE}"
@@ -160,8 +166,13 @@ pip install --quiet rustymimi
 echo ""
 echo "==> Realigning torchaudio + torchvision to installed torch ..."
 INSTALLED_TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
-echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from ${CUDA_INDEX_URL}"
-pip install --quiet --upgrade --index-url "${CUDA_INDEX_URL}" torchaudio torchvision
+if [ -n "${CUDA_INDEX_URL}" ]; then
+  echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from ${CUDA_INDEX_URL}"
+  pip install --upgrade --index-url "${CUDA_INDEX_URL}" "torch==${INSTALLED_TORCH}" torchaudio torchvision
+else
+  echo "    torch is at ${INSTALLED_TORCH} — pulling matching audio/vision wheels from PyPI (default)"
+  pip install --upgrade "torch==${INSTALLED_TORCH}" torchaudio torchvision
+fi
 
 python - <<'PY'
 import torch, torchaudio, torchvision
