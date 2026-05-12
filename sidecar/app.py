@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from knowledge_search import get_search
 from mock_transcript import play_mock_call
 from order_extractor import get_extractor
 from pos_stub import write_order
@@ -36,9 +37,20 @@ log = logging.getLogger("voxreach.sidecar")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     log.info("voxreach sidecar starting up")
-    # Warm up the extractor (this picks LLM-vs-rule based on Ollama reachability)
+    # Warm up the extractor (LLM vs rule, based on Ollama reachability)
     extractor = get_extractor()
     log.info("extractor warmed: %s", type(extractor).__name__)
+
+    # Warm up RAG in the background — slow first call (~3s) but lets uvicorn
+    # bind the port immediately. If sentence-transformers isn't installed,
+    # warmup is a no-op and search() returns [] silently.
+    async def _warm_rag():
+        try:
+            await asyncio.to_thread(get_search().warmup)
+        except Exception as e:
+            log.warning("RAG warmup failed: %s", e)
+    asyncio.create_task(_warm_rag())
+
     yield
     log.info("voxreach sidecar shutting down")
 
@@ -73,6 +85,11 @@ class RetrievalIn(BaseModel):
 
 @app.post("/api/call/start")
 async def call_start():
+    # Reset per-call RAG dedup set
+    global _seen_rag_paths, _last_rag_at, _last_extract_at
+    _seen_rag_paths = set()
+    _last_rag_at = 0.0
+    _last_extract_at = 0.0
     state = await store.start_call()
     return {"call_id": state.call_id}
 
@@ -125,6 +142,15 @@ EXTRACTION_THROTTLE_SEC = float(_os.environ.get("VOXREACH_EXTRACT_THROTTLE_SEC",
 _last_extract_at: float = 0.0
 _extract_lock = asyncio.Lock()
 
+# RAG search runs at a faster cadence — it's CPU-only, ~10ms per query, so
+# we can afford to refresh the panel often. But still throttle to avoid
+# spamming SSE events during a token storm.
+RAG_THROTTLE_SEC = float(_os.environ.get("VOXREACH_RAG_THROTTLE_SEC", "1.0"))
+_last_rag_at: float = 0.0
+# Track which paths we've already surfaced this call so the panel doesn't
+# fill with duplicates of the same item.
+_seen_rag_paths: set[str] = set()
+
 
 async def _maybe_run_extraction(state, *, force: bool = False) -> int | None:
     """Run extraction if at least EXTRACTION_THROTTLE_SEC has passed (or force=True).
@@ -151,6 +177,40 @@ async def _maybe_run_extraction(state, *, force: bool = False) -> int | None:
         return elapsed_ms
 
 
+async def _maybe_run_rag(state, query: str) -> None:
+    """Throttled semantic search over the knowledge pack. Emits retrieval_hit
+    events for each new menu/policy/FAQ match so the right pane fills as the
+    conversation references things.
+
+    Only fires once per RAG_THROTTLE_SEC. Skips paths we've already surfaced
+    this call to avoid duplicate entries in the UI.
+    """
+    global _last_rag_at
+    now = time.monotonic()
+    if (now - _last_rag_at) < RAG_THROTTLE_SEC:
+        return
+    _last_rag_at = now
+
+    search = get_search()
+    if not search.ready:
+        return
+    try:
+        hits = await asyncio.to_thread(search.search, query)
+    except Exception as e:
+        log.debug("RAG search failed: %s", e)
+        return
+
+    for hit in hits:
+        path = hit["path"]
+        if path in _seen_rag_paths:
+            continue
+        _seen_rag_paths.add(path)
+        h = RetrievalHit(path=path, snippet=hit["snippet"], score=hit.get("score"))
+        state.retrieval_log.append(h)
+        state.latency.rag_hits = len(state.retrieval_log)
+        await store.publish(SSEEvent(event="retrieval_hit", data=h.model_dump(mode="json")))
+
+
 @app.post("/api/transcript")
 async def transcript(turn: TranscriptIn):
     """Ingest a new transcript turn, run THROTTLED extraction, emit events.
@@ -169,6 +229,10 @@ async def transcript(turn: TranscriptIn):
     state.transcript.append(t)
     await store.publish(SSEEvent(event="transcript_turn", data=t.model_dump(mode="json")))
 
+    # RAG — fast, CPU-only, fills the right-pane "Knowledge Retrieved" panel
+    await _maybe_run_rag(state, turn.text)
+
+    # LLM-based order extraction — slow, throttled to once per 3s
     elapsed_ms = await _maybe_run_extraction(state)
 
     # Latency bookkeeping
