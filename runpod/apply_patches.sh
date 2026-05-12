@@ -8,6 +8,10 @@
 #   2. inject_transcript_bridge.py — POST every call_start, call_end, and
 #      Vox text token to the VoxReach sidecar at VOXREACH_SIDECAR_URL.
 #      Enables real-time order extraction from the live conversation.
+#   3. inject_customer_stt.py — embed Kyutai STT (kyutai/stt-2.6b-en) in
+#      moshi.server so the customer's spoken audio is transcribed and POSTed
+#      to the sidecar with role=customer. VAD-triggered (500ms tail).
+#      Set VOXREACH_CUSTOMER_STT_ENABLED=0 to disable without unpatching.
 
 set -euo pipefail
 
@@ -28,10 +32,15 @@ fi
 
 echo "==> Patching ${SERVER_PY}"
 echo ""
-echo "[1/2] Default text prompt override"
+echo "[1/3] Default text prompt override"
 "${PP_VENV}/bin/python" "${POC_DIR}/runpod/patches/inject_default_prompt.py" "${SERVER_PY}"
 echo ""
-echo "[2/2] Transcript bridge to sidecar"
+echo "[2/3] Transcript bridge to sidecar"
 "${PP_VENV}/bin/python" "${POC_DIR}/runpod/patches/inject_transcript_bridge.py" "${SERVER_PY}"
+echo ""
+echo "[3/3] Customer STT (Kyutai) bridge to sidecar"
+# Run from the patches dir so customer_stt_helpers.py is importable
+( cd "${POC_DIR}/runpod/patches" && \
+  "${PP_VENV}/bin/python" inject_customer_stt.py "${SERVER_PY}" )
 echo ""
 echo "==> All patches applied. Restart the personaplex tmux window to load the new code."

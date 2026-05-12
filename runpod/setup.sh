@@ -145,6 +145,12 @@ echo "==> Installing NVIDIA moshi fork from ${PERSONAPLEX_REPO}/moshi ..."
 (cd "${PERSONAPLEX_REPO}" && pip install --quiet "moshi/.")
 pip install --quiet huggingface_hub hf_transfer accelerate
 
+# Customer-side STT (Kyutai) deps — webrtcvad for utterance segmentation,
+# transformers for the model. Both go in the personaplex venv because the
+# patched moshi.server imports them at runtime.
+echo "==> Installing Kyutai STT deps (webrtcvad, transformers) into PP venv ..."
+pip install --quiet "webrtcvad>=2.0.10" "transformers>=4.45"
+
 # Apply VoxReach patches (idempotent) — adds server-side default text prompt
 echo "==> Applying VoxReach patches to moshi/server.py ..."
 SERVER_PY=$(ls "${PP_VENV}"/lib/python*/site-packages/moshi/server.py 2>/dev/null | head -1)
@@ -176,6 +182,20 @@ print("   pulling nvidia/personaplex-7b-v1 ...")
 snapshot_download(repo_id="nvidia/personaplex-7b-v1", token=os.environ["HUGGING_FACE_HUB_TOKEN"])
 print("   done.")
 PY
+
+# Pre-pull Kyutai STT model used by the customer-side transcription patch.
+# Skip with VOXREACH_SKIP_STT_PREFETCH=1 if you want a faster setup and don't
+# mind a ~5s lazy-load on the first customer utterance.
+if [ "${VOXREACH_SKIP_STT_PREFETCH:-0}" != "1" ]; then
+  STT_MODEL_ID="${VOXREACH_STT_MODEL:-kyutai/stt-2.6b-en}"
+  echo "==> Pre-downloading Kyutai STT weights (${STT_MODEL_ID}, ~6 GB) ..."
+  python - <<PY
+import os
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id="${STT_MODEL_ID}", token=os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+print("   done.")
+PY
+fi
 
 deactivate
 
