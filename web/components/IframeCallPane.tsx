@@ -11,7 +11,7 @@ interface IframeCallPaneProps {
 
 export function IframeCallPane({ state, iframeUrl }: IframeCallPaneProps) {
   return (
-    <div className="flex h-full flex-col bg-cream p-6 lg:p-10">
+    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-cream p-6 lg:p-10">
       <div className="mb-4 flex items-start justify-between">
         <div>
           <div className="font-serif text-3xl text-ink">Call Hearth &amp; Pass</div>

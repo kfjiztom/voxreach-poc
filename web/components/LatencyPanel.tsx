@@ -11,7 +11,7 @@ export function LatencyPanel({ latency }: LatencyPanelProps) {
         <span>⚡</span>
         <span>Latency</span>
       </div>
-      <dl className="grid grid-cols-3 gap-3 font-mono text-sm">
+      <dl className="grid grid-cols-1 gap-3 font-mono text-sm sm:grid-cols-3">
         <Stat label="First audio" value={fmt(latency.first_audio_ms)} unit="ms" tone="cyan" />
         <Stat label="Last turn" value={fmt(latency.last_turn_ms)} unit="ms" tone="amber" />
         <Stat label="Avg turn" value={fmt(latency.avg_turn_ms)} unit="ms" tone="green" />

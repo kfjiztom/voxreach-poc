@@ -22,7 +22,7 @@ export default function HomePage() {
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
-      <main className="grid flex-1 grid-cols-1 lg:grid-cols-2">
+      <main className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {PERSONAPLEX_URL ? (
           <IframeCallPane state={state} iframeUrl={PERSONAPLEX_URL} />
         ) : (

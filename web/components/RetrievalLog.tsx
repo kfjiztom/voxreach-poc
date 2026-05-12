@@ -27,15 +27,15 @@ export function RetrievalLog({ hits }: RetrievalLogProps) {
             .map((hit, idx) => (
               <div
                 key={`${idx}-${hit.timestamp}`}
-                className="animate-fade-in rounded-lg border border-slate700 bg-slate900/70 px-3 py-2"
+                className="animate-fade-in min-w-0 rounded-lg border border-slate700 bg-slate900/70 px-3 py-2"
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-accentCyan">{hit.path}</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-accentCyan">{hit.path}</span>
                   {hit.score !== null && (
-                    <span className="text-cream/40">{hit.score.toFixed(2)}</span>
+                    <span className="shrink-0 text-cream/40">{hit.score.toFixed(2)}</span>
                   )}
                 </div>
-                <div className="mt-1 truncate text-cream/60">{hit.snippet}</div>
+                <div className="mt-1 line-clamp-2 break-words text-cream/60">{hit.snippet}</div>
               </div>
             ))}
         </div>

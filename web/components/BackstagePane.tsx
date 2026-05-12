@@ -11,7 +11,7 @@ interface BackstagePaneProps {
 
 export function BackstagePane({ state }: BackstagePaneProps) {
   return (
-    <div className="flex h-full flex-col gap-4 bg-slate950 p-6 text-cream lg:p-8">
+    <div className="flex h-full min-w-0 flex-col gap-4 overflow-x-hidden bg-slate950 p-6 text-cream lg:p-8">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-medium uppercase tracking-widest text-cream/80">
