@@ -145,19 +145,15 @@ echo "==> Installing NVIDIA moshi fork from ${PERSONAPLEX_REPO}/moshi ..."
 (cd "${PERSONAPLEX_REPO}" && pip install --quiet "moshi/.")
 pip install --quiet huggingface_hub hf_transfer accelerate
 
-# Customer-side STT (Kyutai) deps — webrtcvad for utterance segmentation,
-# transformers for the model. Both go in the personaplex venv because the
-# patched moshi.server imports them at runtime.
-#
-# IMPORTANT pin: transformers must be 4.x (>=4.45). transformers 5.x pulls
-# huggingface-hub 1.x, which conflicts with moshi-personaplex's declared
-# requirement (huggingface-hub<0.25). Without the upper bound, pip silently
-# resolves to transformers 5.8 and breaks moshi at next restart.
-echo "==> Installing Kyutai STT deps (webrtcvad, transformers<5) into PP venv ..."
+# Customer-side STT deps — webrtcvad for utterance segmentation, faster-whisper
+# (CTranslate2 backend) for transcription. We deliberately avoid transformers/
+# Kyutai-STT here: Kyutai's model_type "stt" isn't supported by transformers
+# v4.x, and pulling in transformers v5 cascades into a numpy/safetensors/hub
+# fight with moshi-personaplex's declared pins.
+echo "==> Installing customer-STT deps (webrtcvad, faster-whisper) into PP venv ..."
 pip install --quiet \
   "webrtcvad>=2.0.10" \
-  "transformers>=4.45,<5.0" \
-  "huggingface-hub>=0.24,<0.25"
+  "faster-whisper>=1.0.0"
 
 # Apply VoxReach patches (idempotent) — adds server-side default text prompt
 echo "==> Applying VoxReach patches to moshi/server.py ..."
@@ -191,12 +187,12 @@ snapshot_download(repo_id="nvidia/personaplex-7b-v1", token=os.environ["HUGGING_
 print("   done.")
 PY
 
-# Pre-pull Kyutai STT model used by the customer-side transcription patch.
+# Pre-pull faster-whisper distil-large-v3 (CT2) weights for customer-side STT.
 # Skip with VOXREACH_SKIP_STT_PREFETCH=1 if you want a faster setup and don't
-# mind a ~5s lazy-load on the first customer utterance.
+# mind a ~3-5s lazy-load on the first customer utterance.
 if [ "${VOXREACH_SKIP_STT_PREFETCH:-0}" != "1" ]; then
-  STT_MODEL_ID="${VOXREACH_STT_MODEL:-kyutai/stt-2.6b-en}"
-  echo "==> Pre-downloading Kyutai STT weights (${STT_MODEL_ID}, ~6 GB) ..."
+  STT_MODEL_ID="${VOXREACH_STT_MODEL:-Systran/faster-distil-whisper-large-v3}"
+  echo "==> Pre-downloading STT weights (${STT_MODEL_ID}, ~1.5 GB) ..."
   python - <<PY
 import os
 from huggingface_hub import snapshot_download

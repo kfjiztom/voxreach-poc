@@ -1,4 +1,14 @@
-"""Idempotent patcher for moshi/server.py — embed Kyutai STT for customer voice.
+"""Idempotent patcher for moshi/server.py — embed customer-side STT.
+
+v2 uses faster-whisper (distil-large-v3) instead of Kyutai STT. The Kyutai
+model has `model_type: stt` which transformers v4.x doesn't recognize, and
+its inference repo causes a dep cascade against moshi-personaplex's
+numpy/safetensors/hub pins. faster-whisper is a strict win for our use:
+~1.5 GB VRAM vs ~7 GB, faster inference, zero dep conflicts.
+
+Upgrades a v1 (Kyutai) install in place automatically.
+
+
 
 Adds three things on top of the existing transcript-bridge patch:
 
@@ -34,7 +44,10 @@ from pathlib import Path
 
 from customer_stt_helpers import HELPERS_BLOCK as STT_HELPERS_BLOCK
 
-MARKER_STT_HELPERS = "# VoxReach customer STT bridge v1"
+MARKER_STT_HELPERS_V1 = "# VoxReach customer STT bridge v1"
+MARKER_STT_HELPERS_V2 = "# VoxReach customer STT bridge v2 (faster-whisper backend)"
+MARKER_STT_HELPERS_END_V1 = "# end VoxReach customer STT bridge v1"
+MARKER_STT_HELPERS_END_V2 = "# end VoxReach customer STT bridge v2"
 MARKER_STT_HOOK = "# VoxReach STT: forward customer PCM"
 MARKER_STT_FLUSH = "# VoxReach STT: flush remaining customer audio"
 MARKER_BRIDGE_HELPERS_END = "# end VoxReach transcript bridge helpers"
@@ -91,16 +104,30 @@ def patch(server_py: Path) -> dict:
     text = server_py.read_text()
     results: dict[str, str] = {}
 
-    # 1) STT helpers block — append after the transcript-bridge helpers block
-    if MARKER_STT_HELPERS in text:
+    # 1) STT helpers block — append after the transcript-bridge helpers.
+    # If a v1 block (Kyutai backend) is present, replace it in place with v2.
+    if MARKER_STT_HELPERS_V2 in text:
         results["stt_helpers"] = "already"
+    elif MARKER_STT_HELPERS_V1 in text:
+        # Upgrade v1 -> v2 by replacing the whole previous block.
+        start = text.find(MARKER_STT_HELPERS_V1)
+        end_marker_pos = text.find(MARKER_STT_HELPERS_END_V1, start)
+        if start == -1 or end_marker_pos == -1:
+            raise ValueError(
+                "STT v1 markers found but boundary missing — cannot upgrade safely. "
+                "Inspect server.py manually."
+            )
+        end_full = end_marker_pos + len(MARKER_STT_HELPERS_END_V1)
+        # Strip the new block's leading "\n\n" so we don't grow blank lines
+        replacement = STT_HELPERS_BLOCK.lstrip("\n")
+        text = text[:start] + replacement.rstrip("\n") + text[end_full:]
+        results["stt_helpers"] = "upgraded v1->v2"
     else:
         if MARKER_BRIDGE_HELPERS_END not in text:
             raise ValueError(
                 "Cannot inject STT helpers — bridge helpers block not found. "
                 "Run inject_transcript_bridge.py first."
             )
-        # Append our block immediately after the bridge's end marker
         text = text.replace(
             MARKER_BRIDGE_HELPERS_END,
             MARKER_BRIDGE_HELPERS_END + STT_HELPERS_BLOCK,
@@ -142,5 +169,5 @@ if __name__ == "__main__":
         sys.exit(2)
     results = patch(Path(sys.argv[1]))
     for name, status in results.items():
-        marker = "✓" if status == "patched" else "•"
+        marker = "✓" if status.startswith("patched") or "upgraded" in status else "•"
         print(f"  {marker} {name}: {status}")
