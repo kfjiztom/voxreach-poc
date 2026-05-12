@@ -277,20 +277,31 @@ class LLMExtractor:
         self,
         ollama_url: str | None = None,
         model: str | None = None,
-        timeout: float = 10.0,
+        timeout: float | None = None,
     ):
         self.ollama_url = ollama_url or os.environ.get("OLLAMA_URL", "http://localhost:11434/v1")
         self.model = model or os.environ.get("VOXREACH_ORDER_MODEL", "gemma2:9b")
-        self.timeout = timeout
+        # Bumped to 25s because gemma2:9b on an A40 with the full system prompt
+        # and a ~30-turn transcript regularly takes 12-20s. Throttled to once
+        # per 3s elsewhere, so a long extraction can't snowball.
+        self.timeout = timeout or float(os.environ.get("VOXREACH_EXTRACT_TIMEOUT", "25.0"))
+        # Only send the last N turns to the LLM. The earlier conversation is
+        # already represented in the previous extraction state we diff against.
+        self.max_turns = int(os.environ.get("VOXREACH_EXTRACT_MAX_TURNS", "40"))
 
     def extract(self, transcript: list[TranscriptTurn]) -> OrderExtractionResult:
         if not transcript:
             return OrderExtractionResult()
 
-        # Render the transcript as a readable conversation
+        # Cap transcript to most recent turns — keeps token count bounded and
+        # latency predictable on long calls. Earlier turns are still reflected
+        # in the previous extraction we diff against, so confirmed items
+        # remain in state even though the LLM no longer sees the original ask.
+        recent = transcript[-self.max_turns:] if len(transcript) > self.max_turns else transcript
+
         rendered = "\n".join(
             f"{'CUSTOMER' if t.role == 'customer' else 'VOX'}: {t.text}"
-            for t in transcript
+            for t in recent
         )
 
         payload = {
@@ -311,7 +322,12 @@ class LLMExtractor:
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(f"{self.ollama_url}/chat/completions", json=payload)
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    # Dump body so we can see what Ollama is upset about
+                    log.warning(
+                        "LLM extraction HTTP %s: %s", r.status_code, r.text[:400],
+                    )
+                    return OrderExtractionResult()
                 content = r.json()["choices"][0]["message"]["content"] or ""
                 parsed = _extract_json_object(content)
                 if parsed is None:
