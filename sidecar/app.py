@@ -79,6 +79,15 @@ async def call_start():
 
 @app.post("/api/call/end")
 async def call_end():
+    # Run one final extraction on the full transcript before tearing down —
+    # bypasses the throttle so we always have the latest state captured.
+    pre_state = store.current
+    if pre_state is not None and pre_state.transcript:
+        try:
+            await _maybe_run_extraction(pre_state, force=True)
+        except Exception as e:
+            log.warning("final extraction failed: %s", e)
+
     state = await store.end_call()
     if state is None:
         raise HTTPException(404, "no active call")
@@ -102,14 +111,53 @@ async def call_end():
     return state.model_dump(mode="json")
 
 
+# Throttle state for in-call extraction.
+# Moshi's transcript bridge POSTs every model text token (10-15/sec). Running
+# Gemma extraction on every POST overwhelms Ollama's queue — most calls then
+# time out, latency balloons, and we get hundreds of "LLM extraction failed"
+# log entries during a single call.
+#
+# Strategy: do extraction at most once every EXTRACTION_THROTTLE_SEC seconds
+# during the call, AND one guaranteed final extraction on call_end. The user
+# can override via VOXREACH_EXTRACT_THROTTLE_SEC env.
+import os as _os
+EXTRACTION_THROTTLE_SEC = float(_os.environ.get("VOXREACH_EXTRACT_THROTTLE_SEC", "3.0"))
+_last_extract_at: float = 0.0
+_extract_lock = asyncio.Lock()
+
+
+async def _maybe_run_extraction(state, *, force: bool = False) -> int | None:
+    """Run extraction if at least EXTRACTION_THROTTLE_SEC has passed (or force=True).
+
+    Returns extraction elapsed_ms when run, None when throttled.
+    Uses a lock so only one extraction is in-flight at a time per call.
+    """
+    global _last_extract_at
+    now = time.monotonic()
+    if not force and (now - _last_extract_at) < EXTRACTION_THROTTLE_SEC:
+        return None
+    if _extract_lock.locked():
+        # An extraction is already running — skip this turn rather than queue
+        return None
+
+    async with _extract_lock:
+        _last_extract_at = time.monotonic()
+        extractor = get_extractor()
+        t0 = time.perf_counter()
+        extraction = await asyncio.to_thread(extractor.extract, list(state.transcript))
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        state.latency.extraction_latency_ms = elapsed_ms
+        await store.apply_extraction(extraction)
+        return elapsed_ms
+
+
 @app.post("/api/transcript")
 async def transcript(turn: TranscriptIn):
-    """Ingest a new transcript turn, run order extraction, emit granular events.
+    """Ingest a new transcript turn, run THROTTLED extraction, emit events.
 
-    The extractor sees the full rolling transcript every turn and returns the
-    complete current order state. state.apply_extraction() diffs against the
-    previous state and emits item_added / item_removed / item_modified events
-    accordingly — so cancellations and quantity changes flow to the UI naturally.
+    Moshi's bridge POSTs every text token. We accept all of them into the
+    transcript history but only run the LLM extractor at most once every
+    EXTRACTION_THROTTLE_SEC seconds — see _maybe_run_extraction docstring.
     """
     state = store.current
     if state is None or state.status != "connected":
@@ -121,14 +169,7 @@ async def transcript(turn: TranscriptIn):
     state.transcript.append(t)
     await store.publish(SSEEvent(event="transcript_turn", data=t.model_dump(mode="json")))
 
-    # Run the extractor against the full conversation so far
-    extractor = get_extractor()
-    t0 = time.perf_counter()
-    extraction = await asyncio.to_thread(extractor.extract, list(state.transcript))
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    state.latency.extraction_latency_ms = elapsed_ms
-
-    await store.apply_extraction(extraction)
+    elapsed_ms = await _maybe_run_extraction(state)
 
     # Latency bookkeeping
     if turn.latency_ms is not None:
@@ -142,6 +183,7 @@ async def transcript(turn: TranscriptIn):
     return {
         "ok": True,
         "items_in_order": len(state.order.active_items),
+        "extracted": elapsed_ms is not None,
         "extraction_ms": elapsed_ms,
     }
 
