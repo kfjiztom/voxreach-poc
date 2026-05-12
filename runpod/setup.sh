@@ -150,8 +150,12 @@ pip install --quiet huggingface_hub hf_transfer accelerate
 # Kyutai-STT here: Kyutai's model_type "stt" isn't supported by transformers
 # v4.x, and pulling in transformers v5 cascades into a numpy/safetensors/hub
 # fight with moshi-personaplex's declared pins.
-echo "==> Installing customer-STT deps (webrtcvad, faster-whisper) into PP venv ..."
+echo "==> Installing customer-STT deps (setuptools, webrtcvad, faster-whisper) into PP venv ..."
+# setuptools is required by webrtcvad — it imports pkg_resources at module load.
+# Python 3.12 venvs don't ship setuptools by default, so without this the
+# import fails silently and STT is disabled at runtime.
 pip install --quiet \
+  "setuptools>=70" \
   "webrtcvad>=2.0.10" \
   "faster-whisper>=1.0.0"
 
