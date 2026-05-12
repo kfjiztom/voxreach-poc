@@ -207,6 +207,8 @@ class CallStore:
                     quantity=added.quantity,
                     unit_price_cents=unit,
                     modifier=added.modifier,
+                    spice_level=added.spice_level,
+                    notes=added.notes,
                     line_total_cents=unit * added.quantity,
                     status="confirmed" if added.confirmed else "pending",
                 )
@@ -235,6 +237,26 @@ class CallStore:
                         await self._publish(SSEEvent(
                             event="item_modified",
                             data={"name": name, "field": "modifier", "old": old_mod, "new": new_mod},
+                        ))
+
+            # Spice-level changes
+            for name, old_spice, new_spice in diff.spice_changed:
+                for item in state.order.items:
+                    if item.name == name and item.status != "removed":
+                        item.spice_level = new_spice
+                        await self._publish(SSEEvent(
+                            event="item_modified",
+                            data={"name": name, "field": "spice_level", "old": old_spice, "new": new_spice},
+                        ))
+
+            # Per-item notes changes
+            for name, old_note, new_note in diff.notes_changed:
+                for item in state.order.items:
+                    if item.name == name and item.status != "removed":
+                        item.notes = new_note
+                        await self._publish(SSEEvent(
+                            event="item_modified",
+                            data={"name": name, "field": "notes", "old": old_note, "new": new_note},
                         ))
 
             # Confirmation flips (Vox echoed the item back)

@@ -66,31 +66,60 @@ function OrderItemRow({ item }: { item: OrderItem }) {
   const removed = item.status === "removed";
   const confirmed = item.status === "confirmed";
 
-  const baseRow = "flex items-baseline justify-between transition-all duration-300";
   const stateClasses = removed
     ? "text-cream/30 line-through"
     : confirmed
     ? "text-cream"
     : "text-cream/70 italic";
 
+  const hasDetail = Boolean(item.spice_level || item.notes);
+
   return (
-    <li className={`animate-fade-in ${baseRow} ${stateClasses}`}>
-      <span>
-        <span className={removed ? "text-cream/30" : "text-accentAmber"}>
-          {item.quantity}×
-        </span>{" "}
-        {item.name}
-        {item.modifier ? (
-          <span className={removed ? "text-cream/25" : "text-cream/50"}>
-            {" "}({item.modifier})
-          </span>
-        ) : null}
-        <ItemStatusBadge status={item.status} />
-      </span>
-      <span className={removed ? "text-cream/25" : "text-cream/80"}>
-        {formatCents(item.line_total_cents)}
-      </span>
+    <li className="animate-fade-in">
+      <div className={`flex items-baseline justify-between transition-all duration-300 ${stateClasses}`}>
+        <span>
+          <span className={removed ? "text-cream/30" : "text-accentAmber"}>
+            {item.quantity}×
+          </span>{" "}
+          {item.name}
+          {item.modifier ? (
+            <span className={removed ? "text-cream/25" : "text-cream/50"}>
+              {" "}({item.modifier})
+            </span>
+          ) : null}
+          <ItemStatusBadge status={item.status} />
+        </span>
+        <span className={removed ? "text-cream/25" : "text-cream/80"}>
+          {formatCents(item.line_total_cents)}
+        </span>
+      </div>
+      {hasDetail && !removed ? (
+        <div className="ml-7 mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+          {item.spice_level ? <SpiceChip level={item.spice_level} /> : null}
+          {item.notes ? (
+            <span className="rounded bg-slate700/60 px-1.5 py-0.5 italic text-cream/60">
+              {item.notes}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </li>
+  );
+}
+
+function SpiceChip({ level }: { level: string }) {
+  const normalized = level.toLowerCase();
+  const isHot = /spic|hot/.test(normalized);
+  const isMild = /mild|no spice|not spicy|no\s*spice/.test(normalized);
+  const cls = isHot
+    ? "bg-accentRose/20 text-accentRose"
+    : isMild
+    ? "bg-accentGreen/15 text-accentGreen"
+    : "bg-accentAmber/20 text-accentAmber";
+  return (
+    <span className={`rounded px-1.5 py-0.5 uppercase tracking-widest ${cls}`}>
+      spice · {level}
+    </span>
   );
 }
 

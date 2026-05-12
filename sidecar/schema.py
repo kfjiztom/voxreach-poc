@@ -26,7 +26,9 @@ class OrderItem(BaseModel):
     name: str
     quantity: int = 1
     unit_price_cents: int
-    modifier: str | None = None
+    modifier: str | None = None  # menu-defined modifier (protein swap, portion size)
+    spice_level: str | None = None  # free-form: "mild", "medium", "extra spicy", etc.
+    notes: str | None = None  # free-form customization: "no onions", "sauce on side"
     line_total_cents: int
     status: ItemStatus = "pending"  # set to "confirmed" once Vox reads it back
 
@@ -81,7 +83,9 @@ class ExtractedItem(BaseModel):
 
     name: str  # must match a menu item name exactly
     quantity: int = 1
-    modifier: str | None = None
+    modifier: str | None = None  # menu-defined modifier (protein swap, portion size)
+    spice_level: str | None = None  # free-form, captured verbatim from customer
+    notes: str | None = None  # free-form customization the customer requested
     confirmed: bool = False  # true once Vox has read this item back to the caller
 
 
@@ -111,13 +115,16 @@ class OrderDiff(BaseModel):
     removed: list[ExtractedItem] = Field(default_factory=list)
     quantity_changed: list[tuple[str, int, int]] = Field(default_factory=list)  # (name, old, new)
     modifier_changed: list[tuple[str, str | None, str | None]] = Field(default_factory=list)
+    spice_changed: list[tuple[str, str | None, str | None]] = Field(default_factory=list)
+    notes_changed: list[tuple[str, str | None, str | None]] = Field(default_factory=list)
     confirmed: list[str] = Field(default_factory=list)  # item names newly confirmed
 
     @property
     def is_empty(self) -> bool:
         return not any([
             self.added, self.removed, self.quantity_changed,
-            self.modifier_changed, self.confirmed,
+            self.modifier_changed, self.spice_changed, self.notes_changed,
+            self.confirmed,
         ])
 
 

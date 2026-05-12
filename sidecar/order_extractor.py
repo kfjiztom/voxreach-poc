@@ -89,6 +89,22 @@ def canonicalize(name: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def _clean_str(v: Any) -> str | None:
+    """Coerce LLM-emitted string-or-null to a stripped string or None.
+
+    Gemma sometimes returns the literal string "null" or empty strings — treat
+    both as None so downstream diff logic doesn't see spurious changes.
+    """
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        v = str(v)
+    s = v.strip()
+    if not s or s.lower() in {"null", "none", "n/a", "na"}:
+        return None
+    return s
+
+
 def _extract_json_object(text: str) -> dict | None:
     """Return the first balanced JSON object in `text`, or None if none."""
     if not text:
@@ -190,7 +206,26 @@ OTHER RULES:
 1. Use canonical menu names exactly as listed below. If the customer says a variant ("the rib-eye"), map it to the canonical name ("Bulgogi").
 2. If a previous extraction included an item but the customer later cancelled it ("scratch the bulgogi"), do NOT include it now.
 3. If the customer changed their mind on quantity ("actually, make it two"), reflect the NEW quantity.
-4. Modifiers (protein swap, spice level, portion): put in the modifier field, not the name.
+4. Each item has THREE customization fields — keep them in their own buckets:
+   - "modifier": the menu-defined option for that dish, when relevant. Use the
+     canonical option text from the per-dish list below. Examples:
+       Japchae → "tofu", "no protein"  (default beef is implied — leave null)
+       Bibimbap → "add bulgogi", "add tofu"
+       Galbi-jjim → "half", "full"
+     If the customer doesn't pick a menu option, leave modifier=null.
+   - "spice_level": ONLY if the customer asked to change spice. Capture verbatim
+     and normalize to one of: "mild", "medium", "spicy", "extra spicy", "no spice".
+     Examples: "make it mild" → "mild"; "extra spicy please" → "extra spicy";
+     "can you make it not spicy" → "no spice". If no spice request, leave null.
+   - "notes": free-form per-dish customizations or special requests. Capture
+     verbatim, but trim filler. Examples:
+       "no onions" → "no onions"
+       "sauce on the side" → "sauce on the side"
+       "extra crispy" → "extra crispy"
+       "split into two boxes" → "split into two boxes"
+       "for my daughter, she's allergic to peanuts" → "peanut allergy"
+     If no customization, leave null. Order-level pickup/customer notes go in
+     the top-level "notes" field, NOT per-item.
 5. "confirmed": true ONLY if Vox has READ THE ITEM BACK in a confirmation phrasing ("Let me confirm: one bulgogi…", "got it: bulgogi and pajeon"). Vox merely acknowledging ("of course", "sure") doesn't count.
 6. customer_name: extract from EITHER:
      - Customer self-identifying: "it's under Maya", "I'm Sam", "the name is Alex"
@@ -200,30 +235,37 @@ OTHER RULES:
 8. pickup_time: format as "H:MM AM/PM" when the customer specifies a time. Accept word forms ("six thirty PM" → "6:30 PM").
 9. caller_finished: true only if the customer has explicitly indicated they are done — "that's it", "that's all", "thanks bye", "perfect that's all". Acknowledgements like "okay" alone are NOT finished signals.
 
-CANONICAL MENU NAMES — these are the only valid item names:
-- Sejak Green Tea
-- Boricha
-- Yuja Honey Tea
-- Insam (Ginseng) Tea
-- Kimchi Trio
-- Haemul Pajeon
-- Mandu (Beef & Chive)
-- Japchae
-- Bibimbap (Stone Bowl)
-- Bulgogi
-- Kimchi Jjigae
-- Galbi-jjim
-- Pine-Nut Hotteok
+CANONICAL MENU NAMES (with available modifiers — only use these options):
+- Sejak Green Tea            [no modifier]
+- Boricha                    [no modifier]
+- Yuja Honey Tea             [no modifier]
+- Insam (Ginseng) Tea        [no modifier]
+- Kimchi Trio                [no modifier; spice already medium]
+- Haemul Pajeon              [no modifier; default spice mild]
+- Mandu (Beef & Chive)       [no modifier]
+- Japchae                    modifier: "tofu" | "no protein" | null (null = default beef)
+- Bibimbap (Stone Bowl)      modifier: "add bulgogi" | "add tofu" | null
+- Bulgogi                    [no modifier; default spice mild]
+- Kimchi Jjigae              [no modifier; default spice hot]
+- Galbi-jjim                 modifier: "half" | "full" (REQUIRED if customer chose)
+- Pine-Nut Hotteok           [no modifier]
 
 Return ONLY this JSON object — no prose, no explanation:
 {
   "items": [
-    {"name": "<canonical>", "quantity": <int>, "modifier": "<string or null>", "confirmed": <bool>}
+    {
+      "name": "<canonical>",
+      "quantity": <int>,
+      "modifier": "<menu option or null>",
+      "spice_level": "<mild|medium|spicy|extra spicy|no spice or null>",
+      "notes": "<free-form per-item customization or null>",
+      "confirmed": <bool>
+    }
   ],
   "customer_name": "<string or null>",
   "customer_phone": "<string or null>",
   "pickup_time": "<string or null>",
-  "notes": "<string or null>",
+  "notes": "<order-level note, e.g. 'allergic to peanuts' or null>",
   "caller_finished": <bool>
 }"""
 
@@ -292,7 +334,9 @@ class LLMExtractor:
             items_out.append(ExtractedItem(
                 name=entry["name"],
                 quantity=qty,
-                modifier=item.get("modifier"),
+                modifier=_clean_str(item.get("modifier")),
+                spice_level=_clean_str(item.get("spice_level")),
+                notes=_clean_str(item.get("notes")),
                 confirmed=bool(item.get("confirmed", False)),
             ))
 
@@ -520,6 +564,8 @@ def diff_extractions(
 
     qty_changed: list[tuple[str, int, int]] = []
     mod_changed: list[tuple[str, str | None, str | None]] = []
+    spice_changed: list[tuple[str, str | None, str | None]] = []
+    notes_changed: list[tuple[str, str | None, str | None]] = []
     confirmed: list[str] = []
     for name, curr_item in curr_items.items():
         if name not in prev_items:
@@ -529,6 +575,10 @@ def diff_extractions(
             qty_changed.append((name, prev_item.quantity, curr_item.quantity))
         if curr_item.modifier != prev_item.modifier:
             mod_changed.append((name, prev_item.modifier, curr_item.modifier))
+        if curr_item.spice_level != prev_item.spice_level:
+            spice_changed.append((name, prev_item.spice_level, curr_item.spice_level))
+        if curr_item.notes != prev_item.notes:
+            notes_changed.append((name, prev_item.notes, curr_item.notes))
         if curr_item.confirmed and not prev_item.confirmed:
             confirmed.append(name)
 
@@ -537,5 +587,7 @@ def diff_extractions(
         removed=removed,
         quantity_changed=qty_changed,
         modifier_changed=mod_changed,
+        spice_changed=spice_changed,
+        notes_changed=notes_changed,
         confirmed=confirmed,
     )

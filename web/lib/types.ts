@@ -17,6 +17,8 @@ export interface OrderItem {
   quantity: number;
   unit_price_cents: number;
   modifier: string | null;
+  spice_level: string | null;
+  notes: string | null;
   line_total_cents: number;
   status: ItemStatus;
 }
@@ -69,7 +71,7 @@ export type SidecarEvent =
   | { event: "order_updated"; data: { order: OrderTicket } }
   | { event: "item_added"; data: OrderItem }
   | { event: "item_removed"; data: { name: string } }
-  | { event: "item_modified"; data: { name: string; field: "quantity" | "modifier"; old: unknown; new: unknown } }
+  | { event: "item_modified"; data: { name: string; field: "quantity" | "modifier" | "spice_level" | "notes"; old: unknown; new: unknown } }
   | { event: "item_confirmed"; data: { name: string } }
   | { event: "retrieval_hit"; data: RetrievalHit }
   | { event: "latency_updated"; data: LatencyMetric }

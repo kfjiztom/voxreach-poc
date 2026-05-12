@@ -14,10 +14,24 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from schema import OrderTicket
+from schema import OrderItem, OrderTicket
 
 LOG_DIR = Path(__file__).resolve().parent.parent / ".pos-writes"
 log = logging.getLogger("voxreach.pos_stub")
+
+
+def _toast_modifiers(item: OrderItem) -> list[dict]:
+    """Flatten an OrderItem's customization fields into a Toast-style modifier list.
+
+    Spice level is treated as a special modifier so it appears on the kitchen
+    ticket alongside menu-defined options (protein swap, portion).
+    """
+    mods: list[dict] = []
+    if item.modifier:
+        mods.append({"name": item.modifier})
+    if item.spice_level:
+        mods.append({"name": f"spice: {item.spice_level}"})
+    return mods
 
 
 def _toast_payload(order: OrderTicket) -> dict:
@@ -35,7 +49,8 @@ def _toast_payload(order: OrderTicket) -> dict:
                 "quantity": item.quantity,
                 "unitPrice": item.unit_price_cents / 100,
                 "lineTotal": item.line_total_cents / 100,
-                "modifiers": [{"name": item.modifier}] if item.modifier else [],
+                "modifiers": _toast_modifiers(item),
+                "specialRequest": item.notes,
             }
             for item in order.active_items
         ],
