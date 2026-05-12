@@ -84,6 +84,53 @@ def canonicalize(name: str) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# Defensive JSON extraction — Gemma occasionally wraps output in markdown
+# fences or emits trailing prose. We pull the first balanced {...} block.
+# ---------------------------------------------------------------------------
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Return the first balanced JSON object in `text`, or None if none."""
+    if not text:
+        return None
+    s = text.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    start = s.find("{")
+    if start == -1:
+        return None
+    # Walk braces, respecting strings to avoid counting braces inside JSON strings
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(s)):
+        c = s[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(s[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Extractor interface
 # ---------------------------------------------------------------------------
 
@@ -118,10 +165,26 @@ An item is ordered ONLY if the CUSTOMER explicitly asked for it. Look for custom
 DO NOT EXTRACT items that appear only in:
   - Vox listing the menu ("we have bulgogi, japchae, haemul pajeon, kimchi trio, ...") — these are NOT orders
   - Vox suggesting something the customer didn't accept ("would you like to try the japchae?" with no customer yes)
-  - The customer asking a question ABOUT an item ("is the bulgogi spicy?") without ordering it
+  - Customer asking a QUESTION about an item — these are NEVER orders:
+      * "What's in the bibimbap?"
+      * "Is the bulgogi spicy?"
+      * "Can you tell me about the japchae?"
+      * "How much is the galbi-jjim?"
+      * "Do you have pajeon?"
+      * "What sides come with bulgogi?"
+    A line ending in "?" that mentions an item is asking ABOUT the item, not ordering it.
   - Items mentioned in passing as examples or context
+  - Items the customer EXPLICITLY cancelled — "scratch the bulgogi", "cancel the pajeon",
+    "actually no, drop that" should REMOVE the item from your output, not include it.
 
-The rule: if you can't point at a specific CUSTOMER line that asked for this item, do NOT include it.
+The rule: if you can't point at a specific CUSTOMER statement (not question) that asked
+for this item, do NOT include it. When in doubt, OMIT.
+
+CONSISTENCY RULE — once an item has been confirmed by Vox, KEEP IT in your output until
+the customer explicitly cancels it. Do not drop a confirmed item just because the
+customer started asking unrelated questions or changed topics. The transcript grows;
+each extraction must include EVERY item the customer has ordered AND not cancelled
+up to this point.
 
 OTHER RULES:
 1. Use canonical menu names exactly as listed below. If the customer says a variant ("the rib-eye"), map it to the canonical name ("Bulgogi").
@@ -195,18 +258,25 @@ class LLMExtractor:
                 {"role": "user", "content": f"Conversation so far:\n\n{rendered}\n\nExtract the current order state as JSON."},
             ],
             "stream": False,
-            "format": "json",  # Ollama-specific: forces JSON-only response
-            "options": {"temperature": 0.0, "num_predict": 1024},
+            # OpenAI-compat JSON mode (this endpoint ignores Ollama's native `format`).
+            # Recent Ollama supports response_format; older versions ignore it but
+            # we still parse defensively below so it doesn't matter.
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+            "max_tokens": 1024,
         }
 
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(f"{self.ollama_url}/chat/completions", json=payload)
                 r.raise_for_status()
-                content = r.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
+                content = r.json()["choices"][0]["message"]["content"] or ""
+                parsed = _extract_json_object(content)
+                if parsed is None:
+                    log.warning("LLM returned no parseable JSON: %r", content[:200])
+                    return OrderExtractionResult()
                 return self._validate_and_canonicalize(parsed)
-        except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
+        except (httpx.HTTPError, KeyError) as e:
             log.warning("LLM extraction failed (%s); returning empty extraction", e)
             return OrderExtractionResult()
 

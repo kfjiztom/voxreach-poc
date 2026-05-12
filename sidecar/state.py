@@ -22,6 +22,43 @@ from schema import (
 
 log = logging.getLogger("voxreach.state")
 
+# Words/phrases that count as evidence the customer actually cancelled
+# something. We require at least one of these to appear in a recent customer
+# turn before letting a flickering extraction wipe a CONFIRMED item.
+_CANCEL_KEYWORDS = (
+    "cancel", "scratch", "remove", "drop the", "drop that", "take off",
+    "take that off", "nevermind", "never mind", "actually no", "skip the",
+    "skip that", "forget the", "forget that", "don't want", "do not want",
+    "without the", "no longer want", "change my mind", "changed my mind",
+)
+_GLOBAL_CANCEL_KEYWORDS = (
+    "cancel my order", "cancel the order", "start over", "scratch everything",
+    "cancel everything", "forget it all",
+)
+
+
+def _recent_customer_text(state, n_turns: int = 6) -> str:
+    """Lowercase concatenation of the last N customer turns."""
+    customer_turns = [t.text for t in state.transcript if t.role == "customer"]
+    return " ".join(customer_turns[-n_turns:]).lower()
+
+
+def _has_cancel_evidence(text: str, item_name: str | None = None) -> bool:
+    """Did the customer recently say something that justifies a cancellation?
+
+    Conservative: ANY cancel keyword counts. If item_name is given, also
+    accept item-specific cancel phrases ("drop the bulgogi").
+    """
+    if any(k in text for k in _CANCEL_KEYWORDS):
+        return True
+    if item_name:
+        name_lc = item_name.lower()
+        # First word match — "drop the bulgogi" / "no bulgogi"
+        first = name_lc.split()[0] if name_lc else ""
+        if first and (f"no {first}" in text or f"not the {first}" in text):
+            return True
+    return False
+
 
 class CallStore:
     def __init__(self) -> None:
@@ -78,6 +115,22 @@ class CallStore:
             if state is None:
                 return
 
+            # Guard: if the new extraction wipes ALL items but the order had
+            # confirmed items and the customer never said anything cancel-like,
+            # this is almost certainly a junk extraction (Gemma returned empty
+            # JSON, or hallucinated an empty order). Skip apply entirely so the
+            # confirmed order is preserved.
+            confirmed_now = [i for i in state.order.items if i.status == "confirmed"]
+            if confirmed_now and not extraction.items:
+                recent = _recent_customer_text(state)
+                if not any(k in recent for k in _GLOBAL_CANCEL_KEYWORDS):
+                    log.warning(
+                        "rejecting empty extraction — %d confirmed items present, "
+                        "no global-cancel keyword in recent customer turns",
+                        len(confirmed_now),
+                    )
+                    return
+
             diff = diff_extractions(self._last_extraction, extraction)
 
             # Update non-item fields
@@ -104,6 +157,8 @@ class CallStore:
             #      Vox menu listing or from extraction flicker. Silently pop
             #      it from order.items — no SSE event, no UI artifact.
             #      The order_updated snapshot at end reconciles the UI.
+            recent_text = _recent_customer_text(state)
+            global_cancel = any(k in recent_text for k in _GLOBAL_CANCEL_KEYWORDS)
             for removed in diff.removed:
                 # Walk backwards so pop indices stay valid
                 for i in range(len(state.order.items) - 1, -1, -1):
@@ -111,7 +166,14 @@ class CallStore:
                     if item.name != removed.name or item.status == "removed":
                         continue
                     if item.status == "confirmed":
-                        # Real cancel
+                        if not (global_cancel or _has_cancel_evidence(recent_text, item.name)):
+                            log.info(
+                                "ignoring extractor-suggested removal of confirmed %r — "
+                                "no cancel evidence in recent customer turns",
+                                item.name,
+                            )
+                            break
+                        # Real cancel — customer said something cancel-like
                         item.status = "removed"
                         await self._publish(SSEEvent(
                             event="item_removed",
@@ -131,6 +193,13 @@ class CallStore:
                 entry = canonicalize(added.name)
                 if entry is None:
                     log.warning("extraction returned unknown item %r; skipping add", added.name)
+                    continue
+                # Suppress duplicates: if an active (non-removed) item with the
+                # same canonical name already exists, treat the extractor's
+                # "add" as a no-op. Happens when we kept a confirmed item that
+                # the extractor temporarily forgot and now re-extracts.
+                if any(i.name == entry["name"] and i.status != "removed" for i in state.order.items):
+                    log.debug("skipping duplicate add for %r (already active)", entry["name"])
                     continue
                 unit = entry["unit_price_cents"]
                 new_item = OrderItem(
