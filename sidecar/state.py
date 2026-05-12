@@ -93,15 +93,38 @@ class CallStore:
             # Apply item-level changes
             curr_by_name = {i.name: i for i in extraction.items}
 
-            # Mark removed items
+            # Handle items that disappeared from extraction.
+            #
+            # Two cases — distinguish them to avoid "phantom removed item" noise:
+            #   1. Item was previously confirmed (Vox read it back to caller):
+            #      this is a REAL cancellation — mark it removed so UI shows
+            #      the strikethrough. Investors care about this signal.
+            #   2. Item was only ever "pending" (never confirmed): likely a
+            #      phantom from Gemma briefly extracting items mentioned in a
+            #      Vox menu listing or from extraction flicker. Silently pop
+            #      it from order.items — no SSE event, no UI artifact.
+            #      The order_updated snapshot at end reconciles the UI.
             for removed in diff.removed:
-                for item in state.order.items:
-                    if item.name == removed.name and item.status != "removed":
+                # Walk backwards so pop indices stay valid
+                for i in range(len(state.order.items) - 1, -1, -1):
+                    item = state.order.items[i]
+                    if item.name != removed.name or item.status == "removed":
+                        continue
+                    if item.status == "confirmed":
+                        # Real cancel
                         item.status = "removed"
                         await self._publish(SSEEvent(
                             event="item_removed",
                             data={"name": removed.name},
                         ))
+                    else:
+                        # Phantom — silent pop
+                        log.debug(
+                            "dropping phantom item %r (was pending, never confirmed)",
+                            removed.name,
+                        )
+                        state.order.items.pop(i)
+                    break
 
             # Add new items
             for added in diff.added:

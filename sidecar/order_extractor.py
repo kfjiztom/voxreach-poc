@@ -101,22 +101,43 @@ class Extractor(Protocol):
 # ---------------------------------------------------------------------------
 
 
-SYSTEM_PROMPT = """You extract restaurant orders from a phone-call transcript between a customer and Vox (the AI host at Hearth & Pass).
+SYSTEM_PROMPT = """You extract restaurant takeout orders from a phone-call transcript between a customer and Vox (the AI host at Hearth & Pass).
 
-You will receive the FULL conversation so far. Your job is to return the CURRENT state of the customer's order — what they actually want right now, after any cancellations, swaps, or quantity changes.
+You will receive the FULL conversation so far. Return the CURRENT state of the customer's ORDER — what the CUSTOMER actually asked for, after any cancellations, swaps, or quantity changes.
 
-Rules:
-1. Only include items from the Hearth & Pass menu. Use the canonical names exactly as written below.
-2. If the customer cancelled or removed an item, do NOT include it.
-3. If the customer changed their mind ("actually, make it two"), reflect the new quantity.
-4. If the customer swapped a protein ("bibimbap with tofu instead"), put the modifier in the modifier field.
-5. Set "confirmed": true ONLY for items that Vox has read back to the customer (e.g., "one bulgogi, one pajeon — got it"). Items the customer mentioned but Vox hasn't echoed are "confirmed": false.
-6. customer_name: extract only if the customer stated their name explicitly ("it's under Maya").
-7. customer_phone: extract only if they gave a 10-digit number.
-8. pickup_time: format as "H:MM AM/PM" if the customer specified one.
-9. caller_finished: true ONLY if the customer has said things like "that's all", "that's it", "thanks bye".
+CRITICAL — what counts as an "ordered" item:
+An item is ordered ONLY if the CUSTOMER explicitly asked for it. Look for customer phrases like:
+  - "I'd like a {item}"
+  - "Can I get {item}"
+  - "Give me {item}"
+  - "I'll have {item}"
+  - "Add a {item}"
+  - "Make it {n} {item}s"
+  - "Yes" in direct response to Vox's specific suggestion ("would you like a tea?" → "Yes")
 
-CANONICAL MENU NAMES (use these exactly):
+DO NOT EXTRACT items that appear only in:
+  - Vox listing the menu ("we have bulgogi, japchae, haemul pajeon, kimchi trio, ...") — these are NOT orders
+  - Vox suggesting something the customer didn't accept ("would you like to try the japchae?" with no customer yes)
+  - The customer asking a question ABOUT an item ("is the bulgogi spicy?") without ordering it
+  - Items mentioned in passing as examples or context
+
+The rule: if you can't point at a specific CUSTOMER line that asked for this item, do NOT include it.
+
+OTHER RULES:
+1. Use canonical menu names exactly as listed below. If the customer says a variant ("the rib-eye"), map it to the canonical name ("Bulgogi").
+2. If a previous extraction included an item but the customer later cancelled it ("scratch the bulgogi"), do NOT include it now.
+3. If the customer changed their mind on quantity ("actually, make it two"), reflect the NEW quantity.
+4. Modifiers (protein swap, spice level, portion): put in the modifier field, not the name.
+5. "confirmed": true ONLY if Vox has READ THE ITEM BACK in a confirmation phrasing ("Let me confirm: one bulgogi…", "got it: bulgogi and pajeon"). Vox merely acknowledging ("of course", "sure") doesn't count.
+6. customer_name: extract from EITHER:
+     - Customer self-identifying: "it's under Maya", "I'm Sam", "the name is Alex"
+     - Vox addressing them by name in a confirmation: "Thanks Maya — see you at six", "Got it, Sam"
+   Do NOT invent a name; if the customer never gave one, return null.
+7. customer_phone: extract a 10-digit number from EITHER the customer's line ("515-555-0182") OR Vox echoing it back ("five-one-five five-five-five oh-one-eight-two"). Normalize to "555-555-5555" or "(555) 555-5555". Return null if no number was given.
+8. pickup_time: format as "H:MM AM/PM" when the customer specifies a time. Accept word forms ("six thirty PM" → "6:30 PM").
+9. caller_finished: true only if the customer has explicitly indicated they are done — "that's it", "that's all", "thanks bye", "perfect that's all". Acknowledgements like "okay" alone are NOT finished signals.
+
+CANONICAL MENU NAMES — these are the only valid item names:
 - Sejak Green Tea
 - Boricha
 - Yuja Honey Tea
@@ -131,19 +152,17 @@ CANONICAL MENU NAMES (use these exactly):
 - Galbi-jjim
 - Pine-Nut Hotteok
 
-Return ONLY a JSON object matching this schema:
+Return ONLY this JSON object — no prose, no explanation:
 {
   "items": [
-    {"name": "<canonical name>", "quantity": <int>, "modifier": "<optional string or null>", "confirmed": <bool>}
+    {"name": "<canonical>", "quantity": <int>, "modifier": "<string or null>", "confirmed": <bool>}
   ],
   "customer_name": "<string or null>",
   "customer_phone": "<string or null>",
   "pickup_time": "<string or null>",
   "notes": "<string or null>",
   "caller_finished": <bool>
-}
-
-No prose, no explanation, just the JSON object."""
+}"""
 
 
 class LLMExtractor:
