@@ -148,8 +148,16 @@ pip install --quiet huggingface_hub hf_transfer accelerate
 # Customer-side STT (Kyutai) deps — webrtcvad for utterance segmentation,
 # transformers for the model. Both go in the personaplex venv because the
 # patched moshi.server imports them at runtime.
-echo "==> Installing Kyutai STT deps (webrtcvad, transformers) into PP venv ..."
-pip install --quiet "webrtcvad>=2.0.10" "transformers>=4.45"
+#
+# IMPORTANT pin: transformers must be 4.x (>=4.45). transformers 5.x pulls
+# huggingface-hub 1.x, which conflicts with moshi-personaplex's declared
+# requirement (huggingface-hub<0.25). Without the upper bound, pip silently
+# resolves to transformers 5.8 and breaks moshi at next restart.
+echo "==> Installing Kyutai STT deps (webrtcvad, transformers<5) into PP venv ..."
+pip install --quiet \
+  "webrtcvad>=2.0.10" \
+  "transformers>=4.45,<5.0" \
+  "huggingface-hub>=0.24,<0.25"
 
 # Apply VoxReach patches (idempotent) — adds server-side default text prompt
 echo "==> Applying VoxReach patches to moshi/server.py ..."
