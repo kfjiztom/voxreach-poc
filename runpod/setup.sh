@@ -10,6 +10,29 @@
 
 set -euo pipefail
 
+# Verbose progress — every command echoes before running. Toggle with QUIET=1.
+if [ "${QUIET:-0}" != "1" ]; then
+  set -x
+fi
+
+# Phase timing helpers
+_phase_t0=0
+phase_start() {
+  _phase_t0=$(date +%s)
+  set +x
+  echo ""
+  echo "═══════════════════════════════════════════════════════════════════════"
+  echo "  $1"
+  echo "═══════════════════════════════════════════════════════════════════════"
+  if [ "${QUIET:-0}" != "1" ]; then set -x; fi
+}
+phase_done() {
+  set +x
+  local elapsed=$(( $(date +%s) - _phase_t0 ))
+  echo "─── done in ${elapsed}s ───"
+  if [ "${QUIET:-0}" != "1" ]; then set -x; fi
+}
+
 WORKSPACE="${WORKSPACE:-/workspace}"
 POC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -68,12 +91,12 @@ fi
 # ---------------------------------------------------------------------------
 # System packages
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Installing system packages (opus, ffmpeg, tmux, jq) ..."
-apt-get update -qq
-apt-get install -y -qq libopus-dev ffmpeg tmux jq curl git
+phase_start "[1/8] System packages (opus, ffmpeg, tmux, jq, git)"
+apt-get update
+apt-get install -y libopus-dev ffmpeg tmux jq curl git
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+phase_done
 
 # ---------------------------------------------------------------------------
 # HF auth check
@@ -92,23 +115,27 @@ echo "==> HF_TOKEN is set (length=${#HF_TOKEN})"
 # ---------------------------------------------------------------------------
 # Upgrade pip globally
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Upgrading pip ..."
-python3 -m pip install --quiet --upgrade pip
+phase_start "[2/8] Upgrading global pip"
+python3 -m pip install --upgrade pip
+phase_done
 
 # ---------------------------------------------------------------------------
 # Sidecar venv (lightweight — lives next to the repo on /workspace)
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Setting up sidecar venv at ${SIDECAR_VENV} ..."
+phase_start "[3/8] Sidecar venv at ${SIDECAR_VENV}"
 mkdir -p "$(dirname "${SIDECAR_VENV}")"
+# If a partial/broken venv exists (common after pod migration), nuke it
+if [ -d "${SIDECAR_VENV}" ] && ! "${SIDECAR_VENV}/bin/python" -c "import sys" 2>/dev/null; then
+  echo "    (existing venv is broken — recreating)"
+  rm -rf "${SIDECAR_VENV}"
+fi
 if [ ! -d "${SIDECAR_VENV}" ]; then
   python3 -m venv "${SIDECAR_VENV}"
 fi
 # shellcheck disable=SC1091
 source "${SIDECAR_VENV}/bin/activate"
-pip install --quiet --upgrade pip
-pip install --quiet \
+pip install --upgrade pip
+pip install \
   "fastapi>=0.115" \
   "uvicorn[standard]>=0.32" \
   "pydantic>=2.9" \
@@ -116,49 +143,70 @@ pip install --quiet \
   "sse-starlette>=2.1" \
   "python-multipart>=0.0.12"
 deactivate
+phase_done
 
 # ---------------------------------------------------------------------------
 # Clone NVIDIA/personaplex repo (moshi fork with PersonaPlex defaults)
 # ---------------------------------------------------------------------------
-echo ""
-if [ ! -d "${PERSONAPLEX_REPO}" ]; then
-  echo "==> Cloning NVIDIA/personaplex to ${PERSONAPLEX_REPO} ..."
+phase_start "[4/8] NVIDIA/personaplex source at ${PERSONAPLEX_REPO}"
+# Fresh clone if missing OR if the moshi/ subdir is gone (happens when a pod
+# migration only preserves partial files on the persistent volume).
+if [ ! -d "${PERSONAPLEX_REPO}" ] || [ ! -d "${PERSONAPLEX_REPO}/moshi" ]; then
+  echo "    (no usable checkout found — cloning fresh)"
+  rm -rf "${PERSONAPLEX_REPO}"
   git clone https://github.com/NVIDIA/personaplex "${PERSONAPLEX_REPO}"
-else
-  echo "==> NVIDIA/personaplex already cloned at ${PERSONAPLEX_REPO}, pulling latest ..."
+elif [ -d "${PERSONAPLEX_REPO}/.git" ]; then
   (cd "${PERSONAPLEX_REPO}" && git pull --ff-only) || true
+else
+  echo "    (existing checkout has no .git but moshi/ present — using on-disk source as-is)"
 fi
+# Sanity — must have the moshi package to install
+[ -f "${PERSONAPLEX_REPO}/moshi/pyproject.toml" ] || {
+  echo "!! ${PERSONAPLEX_REPO}/moshi/pyproject.toml not found — clone is incomplete."
+  exit 1
+}
+phase_done
 
 # ---------------------------------------------------------------------------
 # PersonaPlex venv — install NVIDIA's fork of moshi (not PyPI's vanilla moshi)
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Setting up PersonaPlex venv at ${PP_VENV} ..."
+phase_start "[5/8] PersonaPlex venv at ${PP_VENV} (heavy — torch + moshi)"
 mkdir -p "$(dirname "${PP_VENV}")"
+# If a partial/broken venv exists (common after pod migration — pip's
+# pip._internal goes missing), nuke and recreate from scratch.
+if [ -d "${PP_VENV}" ] && ! "${PP_VENV}/bin/python" -c "import sys" 2>/dev/null; then
+  echo "    (existing PP venv is broken — recreating)"
+  rm -rf "${PP_VENV}"
+fi
 if [ ! -d "${PP_VENV}" ]; then
   python3 -m venv "${PP_VENV}"
 fi
 # shellcheck disable=SC1091
 source "${PP_VENV}/bin/activate"
-pip install --quiet --upgrade pip
+pip install --upgrade pip
 echo "==> Installing NVIDIA moshi fork from ${PERSONAPLEX_REPO}/moshi ..."
-(cd "${PERSONAPLEX_REPO}" && pip install --quiet "moshi/.")
-pip install --quiet huggingface_hub hf_transfer accelerate
+pip install "${PERSONAPLEX_REPO}/moshi"
+pip install huggingface_hub hf_transfer accelerate
+phase_done
 
 # Customer-side STT deps — webrtcvad for utterance segmentation, faster-whisper
 # (CTranslate2 backend) for transcription. We deliberately avoid transformers/
 # Kyutai-STT here: Kyutai's model_type "stt" isn't supported by transformers
 # v4.x, and pulling in transformers v5 cascades into a numpy/safetensors/hub
 # fight with moshi-personaplex's declared pins.
-echo "==> Installing customer-STT deps (setuptools<80, webrtcvad, faster-whisper) into PP venv ..."
+phase_start "[6/8] Customer-side STT deps (setuptools<80 + webrtcvad + faster-whisper)"
 # setuptools 80+ removed pkg_resources entirely, and webrtcvad's top-level
 # __init__ does `import pkg_resources`. With a default fresh-pod install pip
 # resolves to setuptools 82, the webrtcvad import explodes silently, and the
 # STT bridge disables itself. Pin to <80 so pkg_resources is still bundled.
-pip install --quiet \
+pip install \
   "setuptools>=70,<80" \
   "webrtcvad>=2.0.10" \
   "faster-whisper>=1.0.0"
+# Verify the install actually works — fail loudly if pkg_resources is missing
+python -c "import pkg_resources, webrtcvad, faster_whisper; print('STT imports ok')" \
+  || { echo "!! STT imports failed — see setuptools version above"; exit 1; }
+phase_done
 
 # Apply VoxReach patches (idempotent) — adds server-side default text prompt
 echo "==> Applying VoxReach patches to moshi/server.py ..."
@@ -180,53 +228,55 @@ print(f"   VRAM        {torch.cuda.get_device_properties(0).total_memory / 1e9:.
 PY
 
 # ---------------------------------------------------------------------------
-# Pre-pull PersonaPlex weights to the persistent cache
+# Pre-pull weights — both calls are no-ops when the HF cache already has them
 # ---------------------------------------------------------------------------
-echo ""
-echo "==> Pre-downloading PersonaPlex weights to ${HF_HOME} (~14 GB) ..."
+phase_start "[7/8] HF weights (cache hits = near-instant)"
+echo "==> PersonaPlex 7B (~14 GB) — should be cached:"
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
-print("   pulling nvidia/personaplex-7b-v1 ...")
 snapshot_download(repo_id="nvidia/personaplex-7b-v1", token=os.environ["HUGGING_FACE_HUB_TOKEN"])
-print("   done.")
+print("   personaplex-7b-v1 ready")
 PY
 
-# Pre-pull faster-whisper distil-large-v3 (CT2) weights for customer-side STT.
-# Skip with VOXREACH_SKIP_STT_PREFETCH=1 if you want a faster setup and don't
-# mind a ~3-5s lazy-load on the first customer utterance.
 if [ "${VOXREACH_SKIP_STT_PREFETCH:-0}" != "1" ]; then
   STT_MODEL_ID="${VOXREACH_STT_MODEL:-Systran/faster-distil-whisper-large-v3}"
-  echo "==> Pre-downloading STT weights (${STT_MODEL_ID}, ~1.5 GB) ..."
+  echo "==> faster-whisper ${STT_MODEL_ID} (~1.5 GB) — should be cached:"
   python - <<PY
 import os
 from huggingface_hub import snapshot_download
 snapshot_download(repo_id="${STT_MODEL_ID}", token=os.environ.get("HUGGING_FACE_HUB_TOKEN"))
-print("   done.")
+print("   ${STT_MODEL_ID} ready")
 PY
 fi
 
 deactivate
+phase_done
 
 # ---------------------------------------------------------------------------
 # Node + web app
 # ---------------------------------------------------------------------------
-echo ""
+phase_start "[8/8] Node 20 + web app deps"
 if ! command -v node >/dev/null 2>&1; then
-  echo "==> Installing Node 20 ..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y -qq nodejs
+  apt-get install -y nodejs
 fi
-echo "==> Installing web app deps ..."
 cd "${POC_DIR}/web"
-npm ci --silent
+npm ci
+phase_done
 
 # ---------------------------------------------------------------------------
+set +x
 echo ""
-echo "==> Disk usage after setup:"
+echo "═══════════════════════════════════════════════════════════════════════"
+echo "  SETUP COMPLETE"
+echo "═══════════════════════════════════════════════════════════════════════"
+echo ""
+echo "Disk usage:"
 df -h / "${WORKSPACE}" 2>/dev/null | head -3
 echo ""
-echo "==> Setup complete."
-echo "==> Env file written to ${ENV_FILE}"
-echo "==> On future pods: source ${ENV_FILE} && bash runpod/start.sh"
-echo "==> On THIS pod: bash runpod/start.sh"
+echo "Env file: ${ENV_FILE}"
+echo ""
+echo "Next: apply runtime patches and start services"
+echo "  bash ${POC_DIR}/runpod/apply_patches.sh"
+echo "  bash ${POC_DIR}/runpod/start.sh"
