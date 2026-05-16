@@ -13,6 +13,19 @@ if [ -f "${WORKSPACE}/.voxreach.env" ]; then
   source "${WORKSPACE}/.voxreach.env"
 fi
 
+# ---- Hardware autodetect ------------------------------------------------
+# Run detect_hw.py to write per-GPU tuning into ${WORKSPACE}/.voxreach-hw.env
+# (TORCH_CUDA_ARCH_LIST, PYTORCH_CUDA_ALLOC_CONF, VOXREACH_EXTRACT_TIMEOUT,
+# VOXREACH_ORDER_MODEL). Aborts here if the GPU is in the blocked list so
+# we fail loudly rather than spin up services that won't meet real-time.
+HW_ENV="${WORKSPACE}/.voxreach-hw.env"
+if ! python3 "$(dirname "$0")/detect_hw.py" --out "${HW_ENV}"; then
+  echo "!! Hardware detection failed — refusing to launch services." >&2
+  exit 1
+fi
+# shellcheck disable=SC1091
+source "${HW_ENV}"
+
 PP_VENV="${PP_VENV:-${WORKSPACE}/.venv/voxreach-personaplex}"
 PERSONAPLEX_REPO="${PERSONAPLEX_REPO:-${WORKSPACE}/personaplex}"
 SIDECAR_VENV="${SIDECAR_VENV:-${POC_DIR}/sidecar/.venv}"
@@ -79,7 +92,8 @@ echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
 # Default persona prompt — auto-loaded when the client sends empty text_prompt.
 # Requires the server.py patch applied by setup.sh (see runpod/patches/).
-DEFAULT_PROMPT_FILE="${DEFAULT_PROMPT_FILE:-${POC_DIR}/persona/vox_personaplex_prompt.txt}"
+# Uses _short.txt by default (Option 1 — slim persona with fillers + escalation).
+DEFAULT_PROMPT_FILE="${DEFAULT_PROMPT_FILE:-${POC_DIR}/persona/vox_personaplex_prompt_short.txt}"
 
 # Window 1: PersonaPlex full-duplex speech server
 tmux new-session -d -s "${SESSION}" -n personaplex "
@@ -91,8 +105,13 @@ tmux new-session -d -s "${SESSION}" -n personaplex "
   export HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN};
   export MOSHI_DEFAULT_TEXT_PROMPT_FILE=${DEFAULT_PROMPT_FILE};
   export VOXREACH_SIDECAR_URL=http://localhost:${SIDECAR_PORT};
+  export VOXREACH_CUSTOMER_STT_ENABLED=\${VOXREACH_CUSTOMER_STT_ENABLED:-0};
+  export TORCH_CUDA_ARCH_LIST=\${TORCH_CUDA_ARCH_LIST:-};
+  export PYTORCH_CUDA_ALLOC_CONF=\${PYTORCH_CUDA_ALLOC_CONF:-};
   echo '[personaplex] default prompt: ${DEFAULT_PROMPT_FILE}';
   echo '[personaplex] sidecar URL:    http://localhost:${SIDECAR_PORT}';
+  echo '[personaplex] STT enabled:    '\${VOXREACH_CUSTOMER_STT_ENABLED};
+  echo '[personaplex] torch arch:     '\${TORCH_CUDA_ARCH_LIST};
   echo '[personaplex] starting on :${PERSONAPLEX_PORT}';
   python -m moshi.server --host 0.0.0.0 --port ${PERSONAPLEX_PORT}
 "

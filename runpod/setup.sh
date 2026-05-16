@@ -90,12 +90,35 @@ fi
 
 # ---------------------------------------------------------------------------
 # System packages
+#   - libopus-dev/ffmpeg : audio codec for moshi
+#   - lshw + pciutils    : Ollama installer uses these to detect the GPU at
+#                          install time; without them you get a CPU-fallback
+#                          warning even though the GPU is present
+#   - tmux/jq/git/curl   : tooling
 # ---------------------------------------------------------------------------
-phase_start "[1/8] System packages (opus, ffmpeg, tmux, jq, git)"
-apt-get update
-apt-get install -y libopus-dev ffmpeg tmux jq curl git
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+phase_start "[1/8] System packages (audio codecs, GPU detect tools, tmux/jq)"
+SUDO=""
+if [ "$EUID" -ne 0 ]; then SUDO="sudo"; fi
+$SUDO apt-get update
+$SUDO apt-get install -y libopus-dev ffmpeg tmux jq curl git lshw pciutils
+$SUDO apt-get clean
+$SUDO rm -rf /var/lib/apt/lists/*
+
+# Create the unversioned libcuda.so symlink that Triton's gcc-compiled
+# helper module needs at moshi warmup time. The driver ships libcuda.so.1
+# (the runtime stub) but not the dev symlink. Without this, torch.compile
+# fails with "ld: cannot find -lcuda" and moshi crashes during warmup.
+if [ ! -e /usr/lib/x86_64-linux-gnu/libcuda.so ]; then
+  LIBCUDA_RT=$(find / -name 'libcuda.so.1' -not -path '*/proc/*' 2>/dev/null | head -1)
+  if [ -n "${LIBCUDA_RT}" ]; then
+    echo "    Creating symlink: /usr/lib/x86_64-linux-gnu/libcuda.so -> ${LIBCUDA_RT}"
+    $SUDO ln -sf "${LIBCUDA_RT}" /usr/lib/x86_64-linux-gnu/libcuda.so
+    $SUDO ldconfig
+  else
+    echo "    !! libcuda.so.1 not found anywhere — moshi warmup will fail."
+    echo "       Check NVIDIA driver install."
+  fi
+fi
 phase_done
 
 # ---------------------------------------------------------------------------
@@ -266,7 +289,21 @@ npm ci
 phase_done
 
 # ---------------------------------------------------------------------------
+# Hardware autodetect — writes per-GPU tuning to /workspace/.voxreach-hw.env
+# (TORCH_CUDA_ARCH_LIST, PYTORCH_CUDA_ALLOC_CONF, VOXREACH_EXTRACT_TIMEOUT,
+# VOXREACH_ORDER_MODEL). start.sh sources this on every launch.
+# ---------------------------------------------------------------------------
 set +x
+echo ""
+echo "═══════════════════════════════════════════════════════════════════════"
+echo "  Hardware autodetect"
+echo "═══════════════════════════════════════════════════════════════════════"
+python3 "${POC_DIR}/runpod/detect_hw.py" --out "${WORKSPACE}/.voxreach-hw.env" || {
+  echo "!! detect_hw.py exited non-zero — GPU may be blocked or undetected."
+  echo "   start.sh will refuse to launch services until this passes."
+}
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════"
 echo "  SETUP COMPLETE"
@@ -275,8 +312,11 @@ echo ""
 echo "Disk usage:"
 df -h / "${WORKSPACE}" 2>/dev/null | head -3
 echo ""
-echo "Env file: ${ENV_FILE}"
+echo "Env files:"
+echo "  ${ENV_FILE}                  (paths + caches)"
+echo "  ${WORKSPACE}/.voxreach-hw.env   (per-GPU tuning, auto-generated)"
 echo ""
 echo "Next: apply runtime patches and start services"
 echo "  bash ${POC_DIR}/runpod/apply_patches.sh"
+echo "  bash ${POC_DIR}/runpod/setup_ollama.sh   # if not already done"
 echo "  bash ${POC_DIR}/runpod/start.sh"

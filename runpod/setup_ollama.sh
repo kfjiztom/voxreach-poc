@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
-# Optional add-on for the VoxReach POC: install Ollama + pull Gemma-2-9B for
-# real-time order extraction in the sidecar.
+# Optional add-on for the VoxReach POC: install Ollama + pull the order
+# extractor model used by the sidecar.
 #
 # Without this, the sidecar falls back to a rule-based extractor that only
 # appends items (no cancel/modify support). With this, the LLM extractor
 # handles the full conversation context — quantity changes, swaps, cancels.
 #
-# VRAM budget on A40 48 GB:
-#   PersonaPlex ~14 GB + Moshi KV cache ~6 GB + Gemma-2-9B ~6 GB = ~26 GB used,
-#   ~22 GB free. Comfortable.
+# Model: qwen3.5:4b (~3.4 GB). Newer + smaller than the prior gemma2:9b
+# choice, and stronger at the rigid JSON output we want.
+#
+# VRAM budget (typical):
+#   PersonaPlex ~18 GB + qwen3.5:4b ~3.4 GB + faster-whisper ~1.5 GB = ~23 GB.
+#   Fits comfortably on A100 80 GB, L40 48 GB, A40 48 GB.
+#
+# Override via env: VOXREACH_ORDER_MODEL=<other-ollama-tag> bash setup_ollama.sh
 
 set -euo pipefail
 
-OLLAMA_MODEL="${VOXREACH_ORDER_MODEL:-gemma2:9b}"
+# Source the per-GPU env file if detect_hw.py has run — it sets the right
+# VOXREACH_ORDER_MODEL for whatever hardware we landed on.
+WORKSPACE="${WORKSPACE:-/workspace}"
+if [ -f "${WORKSPACE}/.voxreach-hw.env" ]; then
+  # shellcheck disable=SC1091
+  source "${WORKSPACE}/.voxreach-hw.env"
+fi
+
+OLLAMA_MODEL="${VOXREACH_ORDER_MODEL:-qwen3.5:4b}"
 
 echo "==> Installing Ollama (one-shot script) ..."
 if ! command -v ollama >/dev/null 2>&1; then
@@ -38,7 +51,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
 done
 
-echo "==> Pulling model ${OLLAMA_MODEL} (this is the long step — ~6 GB) ..."
+echo "==> Pulling model ${OLLAMA_MODEL} (the long step) ..."
 ollama pull "${OLLAMA_MODEL}"
 
 echo "==> Smoke test: extract a simple order ..."
