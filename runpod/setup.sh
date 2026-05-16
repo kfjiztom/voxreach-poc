@@ -127,9 +127,27 @@ phase_done
 echo ""
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "!! HF_TOKEN is not set in this pod's environment."
-  echo "   1. Generate a token at https://huggingface.co/settings/tokens"
-  echo "   2. Accept the license at https://huggingface.co/nvidia/personaplex-7b-v1"
-  echo "   3. Set HF_TOKEN as a secret on this RunPod pod, then re-run."
+  if [ -n "${SUDO_USER:-}" ]; then
+    echo ""
+    echo "   You ran this with sudo, which strips environment variables by default."
+    echo "   HF_TOKEN was probably set in your '${SUDO_USER}' shell but didn't cross"
+    echo "   the sudo boundary. Three ways to fix:"
+    echo ""
+    echo "     # Recommended — don't sudo the outer command (script sudos internally):"
+    echo "     bash $0"
+    echo ""
+    echo "     # OR preserve env across sudo:"
+    echo "     sudo -E bash $0"
+    echo ""
+    echo "     # OR pass the token explicitly:"
+    echo "     sudo HF_TOKEN=\"\$HF_TOKEN\" bash $0"
+  else
+    echo "   1. Generate a token at https://huggingface.co/settings/tokens"
+    echo "   2. Accept the license at https://huggingface.co/nvidia/personaplex-7b-v1"
+    echo "   3. Export HF_TOKEN in this shell:"
+    echo "        export HF_TOKEN=hf_<your-token>"
+    echo "      Then re-run this script."
+  fi
   exit 1
 fi
 export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
