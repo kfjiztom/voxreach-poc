@@ -41,14 +41,23 @@ NEW_BLOCK = """        # VoxReach patch: server-side default text prompt
         # Override the client-provided text_prompt with MOSHI_DEFAULT_TEXT_PROMPT_FILE
         # when set — this prevents the PersonaPlex UI's auto-filled default
         # (teacher/assistant persona) from beating our Vox/Hearth&Pass prompt.
+        # If encode fails (token overflow, bad chars), fall back to the client
+        # prompt so the connection still completes — better than a silent drop.
         _default_path = os.environ.get("MOSHI_DEFAULT_TEXT_PROMPT_FILE", "")
+        _client_prompt = None
         if _default_path and os.path.exists(_default_path):
-            with open(_default_path) as _f:
-                _client_prompt = _f.read().strip()
-            logger.info(f"VoxReach: overriding text_prompt with default from {_default_path} ({len(_client_prompt)} chars)")
-        else:
+            try:
+                with open(_default_path) as _f:
+                    _file_prompt = _f.read().strip()
+                _tok = self.text_tokenizer.encode(wrap_with_system_tags(_file_prompt))
+                logger.info(f"VoxReach: overriding text_prompt from {_default_path} ({len(_file_prompt)} chars, {len(_tok)} tokens)")
+                self.lm_gen.text_prompt_tokens = _tok
+                _client_prompt = _file_prompt
+            except Exception as _e:
+                logger.error(f"VoxReach: persona-prompt encode FAILED ({_e!r}); falling back to client prompt")
+        if _client_prompt is None:
             _client_prompt = request.query.get("text_prompt", "") or ""
-        self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(_client_prompt)) if _client_prompt else None"""
+            self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(_client_prompt)) if _client_prompt else None"""
 
 
 def patch(server_py: Path) -> str:
@@ -59,12 +68,12 @@ def patch(server_py: Path) -> str:
     text = server_py.read_text()
 
     # If our marker is present, we may have an EARLIER version of the patch
-    # (fallback-only mode). Check whether the current block already matches the
-    # new override-mode logic; if not, replace the legacy block.
+    # (fallback-only mode, or v2 override without try/except). Check the v3
+    # signature; if not present, replace the legacy block with current logic.
     if MARKER in text:
-        if "overriding text_prompt with default" in text:
+        if "persona-prompt encode FAILED" in text:
             return "already"
-        # Legacy patch present — locate and replace the legacy block
+        # Legacy / earlier patch present — locate and replace
         return _replace_legacy_block(server_py, text)
 
     if OLD_PATTERN not in text:

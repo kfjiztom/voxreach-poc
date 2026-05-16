@@ -61,6 +61,8 @@ export interface CallState {
   retrieval_log: RetrievalHit[];
   latency: LatencyMetric;
   pos_write_status: PosWriteStatus;
+  needs_human: boolean;
+  escalation_reason: string | null;
 }
 
 export type SidecarEvent =
@@ -81,7 +83,8 @@ export type SidecarEvent =
         | { status: "writing" }
         | { status: "written"; response: Record<string, unknown>; order: OrderTicket }
         | { status: "failed"; error: string };
-    };
+    }
+  | { event: "escalate"; data: { reason: string; triggered_by: string } };
 
 export function activeItems(order: OrderTicket): OrderItem[] {
   return order.items.filter((i) => i.status !== "removed");
@@ -123,6 +126,8 @@ export function emptyState(): CallState {
       extraction_latency_ms: null,
     },
     pos_write_status: "pending",
+    needs_human: false,
+    escalation_reason: null,
   };
 }
 

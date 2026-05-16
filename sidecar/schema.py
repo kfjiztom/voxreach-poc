@@ -166,6 +166,8 @@ class CallState(BaseModel):
     retrieval_log: list[RetrievalHit] = Field(default_factory=list)
     latency: LatencyMetric = Field(default_factory=LatencyMetric)
     pos_write_status: Literal["pending", "writing", "written", "failed"] = "pending"
+    needs_human: bool = False  # set when Vox uses an escalation phrase
+    escalation_reason: str | None = None  # last detected reason ("allergies", "complaint", etc.)
 
 
 class SSEEvent(BaseModel):
@@ -183,5 +185,6 @@ class SSEEvent(BaseModel):
         "retrieval_hit",
         "latency_updated",
         "pos_write",
+        "escalate",
     ]
     data: dict

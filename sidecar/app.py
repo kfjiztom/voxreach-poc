@@ -128,6 +128,49 @@ async def call_end():
     return state.model_dump(mode="json")
 
 
+# ---------------------------------------------------------------------------
+# Escalation detection
+# ---------------------------------------------------------------------------
+# Phrases the persona instructs Vox to say verbatim when handing off. If any
+# of these show up in Vox's transcript, we flag the call. Match is loose
+# (substring, case-insensitive) to survive sentence buffering quirks.
+_ESCALATION_PHRASES = (
+    "get a team member",
+    "team member on the line",
+    "transfer you",
+    "transferring you",
+    "connect you with a manager",
+    "let me get the manager",
+    "have a manager call you back",
+)
+# Topic hint — last customer turn that preceded the handoff. We pattern-match
+# the recent transcript to give the UI a useful reason badge.
+_ESCALATION_TOPIC_KEYWORDS = {
+    "allergy": ["allergy", "allergic", "peanut", "gluten", "dairy"],
+    "complaint": ["complaint", "refund", "problem", "wrong order", "missing"],
+    "catering": ["catering", "private event", "large party", "party of"],
+    "jobs": ["job", "hiring", "apply", "employment"],
+    "off-menu": ["do you have", "do you serve", "can i get"],
+}
+
+
+def _detect_escalation(vox_text: str, state) -> str | None:
+    """Return a reason string if Vox just spoke an escalation phrase, else None."""
+    lo = vox_text.lower()
+    if not any(p in lo for p in _ESCALATION_PHRASES):
+        return None
+    # Walk back through recent customer turns to guess WHY Vox escalated.
+    for t in reversed(state.transcript[-10:]):
+        if t.role != "customer":
+            continue
+        ct = t.text.lower()
+        for topic, kws in _ESCALATION_TOPIC_KEYWORDS.items():
+            if any(k in ct for k in kws):
+                return topic
+        break  # only look at the most recent customer turn
+    return "general"
+
+
 # Throttle state for in-call extraction.
 # Moshi's transcript bridge POSTs every model text token (10-15/sec). Running
 # Gemma extraction on every POST overwhelms Ollama's queue — most calls then
@@ -228,6 +271,20 @@ async def transcript(turn: TranscriptIn):
     t = TranscriptTurn(role=turn.role, text=turn.text, latency_ms=turn.latency_ms)
     state.transcript.append(t)
     await store.publish(SSEEvent(event="transcript_turn", data=t.model_dump(mode="json")))
+
+    # Escalation detection — only on Vox's side. If Vox uses an escalation
+    # phrase from the persona ("Let me get a team member..."), flag the call
+    # as needing human handoff.
+    if turn.role == "vox":
+        reason = _detect_escalation(turn.text, state)
+        if reason and not state.needs_human:
+            state.needs_human = True
+            state.escalation_reason = reason
+            log.info("escalation triggered (reason=%s) on call_id=%s", reason, state.call_id)
+            await store.publish(SSEEvent(
+                event="escalate",
+                data={"reason": reason, "triggered_by": turn.text[:200]},
+            ))
 
     # RAG — fast, CPU-only, fills the right-pane "Knowledge Retrieved" panel
     await _maybe_run_rag(state, turn.text)

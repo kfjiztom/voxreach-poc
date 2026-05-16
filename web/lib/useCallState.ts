@@ -112,6 +112,13 @@ function reducer(state: CallState, action: Action): CallState {
             pos_write_status: ev.data.status,
           };
 
+        case "escalate":
+          return {
+            ...state,
+            needs_human: true,
+            escalation_reason: ev.data.reason,
+          };
+
         default:
           return state;
       }
@@ -154,6 +161,7 @@ export function useCallState() {
       "retrieval_hit",
       "latency_updated",
       "pos_write",
+      "escalate",
     ];
     for (const name of events) {
       es.addEventListener(name, (ev) => handle(ev as MessageEvent, name));
