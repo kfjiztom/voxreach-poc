@@ -95,13 +95,32 @@ fi
 
 # Start Ollama in the background if it's installed (powers the order extractor).
 # Without Ollama, the sidecar falls back to the rule-based extractor (append-only).
+#
+# IMPORTANT: pass OLLAMA_MODELS so ollama looks at our persistent model dir.
+# If we don't, ollama defaults to ~/.ollama/models for whichever user is
+# running it, which after a pod migration / user swap will be empty — even
+# though /workspace/ollama-models holds 5+ GB of pulled models.
+export OLLAMA_MODELS="${OLLAMA_MODELS:-${WORKSPACE}/ollama-models}"
 if command -v ollama >/dev/null 2>&1; then
   if ! pgrep -x ollama >/dev/null; then
-    echo "==> Starting Ollama daemon in the background ..."
-    nohup ollama serve > /tmp/ollama.log 2>&1 &
-    sleep 2
+    echo "==> Starting Ollama daemon (OLLAMA_MODELS=${OLLAMA_MODELS}) ..."
+    nohup env OLLAMA_MODELS="${OLLAMA_MODELS}" ollama serve > /tmp/ollama.log 2>&1 &
+    sleep 3
+  else
+    # Already running — confirm it can see our models. If not, the daemon
+    # was started without OLLAMA_MODELS and we need to restart it.
+    RUNNING_OLLAMA_PID=$(pgrep -x ollama | head -1)
+    RUNNING_OLLAMA_MODELS=$(cat /proc/${RUNNING_OLLAMA_PID}/environ 2>/dev/null | tr '\0' '\n' | grep '^OLLAMA_MODELS=' | cut -d= -f2-)
+    if [ "${RUNNING_OLLAMA_MODELS}" != "${OLLAMA_MODELS}" ]; then
+      echo "==> Existing Ollama uses '${RUNNING_OLLAMA_MODELS:-<default>}' — restarting it to use ${OLLAMA_MODELS}"
+      pkill -x ollama 2>/dev/null || true
+      sleep 2
+      nohup env OLLAMA_MODELS="${OLLAMA_MODELS}" ollama serve > /tmp/ollama.log 2>&1 &
+      sleep 3
+    fi
   fi
   echo "==> Ollama: $(ollama --version 2>&1 | head -1)"
+  echo "==> Models available: $(OLLAMA_HOST=http://localhost:11434 ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | xargs echo)"
 else
   echo "==> Ollama not installed — sidecar will use rule-based extractor (no cancel/modify support)."
   echo "    Run bash runpod/setup_ollama.sh to enable LLM-based extraction."
