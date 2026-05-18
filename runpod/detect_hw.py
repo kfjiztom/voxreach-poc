@@ -44,7 +44,7 @@ PROFILES = [
         "torch_arch": "8.0",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 30,
-        "ollama_model": "qwen3.5:4b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "",
         "block": "",
     },
@@ -55,7 +55,7 @@ PROFILES = [
         "torch_arch": "8.9",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 45,
-        "ollama_model": "qwen3.5:4b",
+        "ollama_model": "qwen2.5:3b",
         "warn": (
             "L40 has ~1/3 the FP16 throughput of A100. Moshi's 80ms audio frame "
             "budget is tight on this card; expect occasional response slowness, "
@@ -70,7 +70,7 @@ PROFILES = [
         "torch_arch": "8.9",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 60,
-        "ollama_model": "qwen3.5:2b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "L4 has 24 GB. Switching extractor to qwen3.5:2b to leave headroom for moshi.",
         "block": "",
     },
@@ -81,7 +81,7 @@ PROFILES = [
         "torch_arch": "8.6",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 60,
-        "ollama_model": "qwen3.5:2b",
+        "ollama_model": "qwen2.5:3b",
         "warn": (
             "RTX A6000 has ~1/8 the FP16 throughput of A100. Moshi may glitch under "
             "real-time load. Acceptable for development; not recommended for live demos."
@@ -95,7 +95,7 @@ PROFILES = [
         "torch_arch": "8.6",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 45,
-        "ollama_model": "qwen3.5:4b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "A40 works but is slower than A100. Extraction timeout set higher.",
         "block": "",
     },
@@ -106,7 +106,7 @@ PROFILES = [
         "torch_arch": "9.0",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 20,
-        "ollama_model": "qwen3.5:4b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "",
         "block": "",
     },
@@ -117,7 +117,7 @@ PROFILES = [
         "torch_arch": "9.0",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 20,
-        "ollama_model": "qwen3.5:4b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "",
         "block": "",
     },
@@ -129,7 +129,7 @@ PROFILES = [
         "torch_arch": "8.6",
         "alloc_conf": "",
         "extract_timeout": 60,
-        "ollama_model": "qwen3.5:2b",
+        "ollama_model": "qwen2.5:3b",
         "warn": "",
         "block": (
             "RTX 3090 (24 GB) cannot host PersonaPlex + Ollama + faster-whisper "
@@ -187,10 +187,10 @@ def match_profile(gpu_name: str) -> dict:
         "torch_arch": "",
         "alloc_conf": "expandable_segments:True",
         "extract_timeout": 60,
-        "ollama_model": "qwen3.5:2b",
+        "ollama_model": "qwen2.5:3b",
         "warn": (
             f"GPU '{gpu_name}' is not in our known-good profile list. Applying "
-            "conservative defaults: qwen3:1.7b extractor, 60s timeout, no torch arch "
+            "conservative defaults: qwen2.5:3b extractor, 60s timeout, no torch arch "
             "hint. Expect degraded performance until profile is added."
         ),
         "block": "",

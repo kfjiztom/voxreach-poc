@@ -351,6 +351,10 @@ async def order_readback():
     """Synthesize the live order ticket as audio so the operator (or caller,
     via the browser) can hear the kitchen-bound order spoken back.
 
+    Allowed on BOTH live calls and just-ended calls — operators routinely
+    want to re-verify after the caller hangs up. We only 404 when no call
+    state has ever existed in this sidecar instance.
+
     Runs Piper on CPU off the main event loop — moshi's GPU is never touched.
     Returns audio/wav (mono, ~22 kHz) plus the spoken text as a header for
     debugging.
@@ -360,7 +364,7 @@ async def order_readback():
 
     state = store.current
     if state is None:
-        raise HTTPException(404, "no active call")
+        raise HTTPException(404, "no call yet — start a call first")
     if not state.order.active_items:
         raise HTTPException(409, "order is empty — nothing to read back")
 
