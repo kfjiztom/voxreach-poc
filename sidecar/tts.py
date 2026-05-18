@@ -58,15 +58,37 @@ class _PiperSingleton:
             return cls._instance
 
     def synth_wav_bytes(self, text: str) -> bytes:
-        """Synthesize `text` and return WAV bytes (mono, 22050 Hz typically)."""
+        """Synthesize `text` and return WAV bytes (mono, 22050 Hz typically).
+
+        Piper 1.4+ changed the API:
+          - synthesize(text)        -> Iterable[AudioChunk]  (need to iterate ourselves)
+          - synthesize_wav(text, f) -> writes WAV format directly to f
+        Prefer synthesize_wav when available; fall back to manual streaming.
+        """
         if not text.strip():
             raise ValueError("empty text passed to TTS")
         buf = io.BytesIO()
+        synth_wav = getattr(self.voice, "synthesize_wav", None)
+        if callable(synth_wav):
+            # Newer API — writes the full WAV (header + frames) to the file.
+            synth_wav(text, buf)
+            return buf.getvalue()
+        # Fallback for older Piper versions: iterate AudioChunk and write
+        # 16-bit PCM frames into a wave we open ourselves.
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(self.sample_rate)
-            self.voice.synthesize(text, wf)
+            for chunk in self.voice.synthesize(text):
+                # Different Piper builds expose the int16 bytes under different attrs
+                raw = (
+                    getattr(chunk, "audio_int16_bytes", None)
+                    or getattr(chunk, "audio_int16", None)
+                    or getattr(chunk, "audio", None)
+                )
+                if raw is None:
+                    continue
+                wf.writeframes(raw if isinstance(raw, (bytes, bytearray)) else bytes(raw))
         return buf.getvalue()
 
 
