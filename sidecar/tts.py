@@ -69,26 +69,26 @@ class _PiperSingleton:
             raise ValueError("empty text passed to TTS")
         buf = io.BytesIO()
         synth_wav = getattr(self.voice, "synthesize_wav", None)
-        if callable(synth_wav):
-            # Newer API — writes the full WAV (header + frames) to the file.
-            synth_wav(text, buf)
-            return buf.getvalue()
-        # Fallback for older Piper versions: iterate AudioChunk and write
-        # 16-bit PCM frames into a wave we open ourselves.
+        # synthesize_wav expects a wave.Wave_write (calls setframerate /
+        # setnchannels / setsampwidth on it from the first audio chunk). It
+        # does NOT take a raw BytesIO — passing one trips AttributeError.
         with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(self.sample_rate)
-            for chunk in self.voice.synthesize(text):
-                # Different Piper builds expose the int16 bytes under different attrs
-                raw = (
-                    getattr(chunk, "audio_int16_bytes", None)
-                    or getattr(chunk, "audio_int16", None)
-                    or getattr(chunk, "audio", None)
-                )
-                if raw is None:
-                    continue
-                wf.writeframes(raw if isinstance(raw, (bytes, bytearray)) else bytes(raw))
+            if callable(synth_wav):
+                synth_wav(text, wf)
+            else:
+                # Older Piper API — iterate AudioChunks ourselves.
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                for chunk in self.voice.synthesize(text):
+                    raw = (
+                        getattr(chunk, "audio_int16_bytes", None)
+                        or getattr(chunk, "audio_int16", None)
+                        or getattr(chunk, "audio", None)
+                    )
+                    if raw is None:
+                        continue
+                    wf.writeframes(raw if isinstance(raw, (bytes, bytearray)) else bytes(raw))
         return buf.getvalue()
 
 
