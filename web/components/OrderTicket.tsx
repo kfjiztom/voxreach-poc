@@ -1,5 +1,7 @@
 "use client";
 
+import { useRef, useState } from "react";
+
 import type { OrderItem, OrderTicket as Order, ItemStatus } from "@/lib/types";
 import { activeItems, activeSubtotalCents, formatCents } from "@/lib/types";
 
@@ -56,8 +58,87 @@ export function OrderTicketView({ order }: OrderTicketProps) {
               Pickup: <span className="text-cream">{order.pickup_time}</span>
             </div>
           )}
+          <ReadbackButton disabled={active.length === 0} />
         </div>
       )}
+    </div>
+  );
+}
+
+function ReadbackButton({ disabled }: { disabled: boolean }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "playing" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [transcript, setTranscript] = useState<string>("");
+
+  async function onClick() {
+    if (state === "playing" && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      setState("idle");
+      return;
+    }
+    setState("loading");
+    setErrorMsg("");
+    try {
+      const r = await fetch("/api/sidecar/order/readback", { method: "POST" });
+      if (!r.ok) {
+        const detail = await r.text().catch(() => r.statusText);
+        throw new Error(`HTTP ${r.status}: ${detail.slice(0, 120)}`);
+      }
+      const text = r.headers.get("X-Readback-Text") || "";
+      setTranscript(text);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = audioRef.current ?? new Audio();
+      audioRef.current = a;
+      a.src = url;
+      a.onended = () => {
+        setState("idle");
+        URL.revokeObjectURL(url);
+      };
+      a.onerror = () => {
+        setState("error");
+        setErrorMsg("audio playback failed");
+        URL.revokeObjectURL(url);
+      };
+      setState("playing");
+      await a.play();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setState("error");
+      setErrorMsg(msg);
+    }
+  }
+
+  const label =
+    state === "loading"
+      ? "Synthesizing..."
+      : state === "playing"
+      ? "■ Stop readback"
+      : state === "error"
+      ? "▶ Retry readback"
+      : "▶ Play readback";
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled || state === "loading"}
+        className="self-start rounded-lg border border-accentCyan/30 bg-accentCyan/10 px-3 py-1.5 text-xs uppercase tracking-widest text-accentCyan transition-colors hover:bg-accentCyan/20 disabled:cursor-not-allowed disabled:opacity-40"
+        title="Generates a TTS read-back of the current order so you (or the kitchen) can verify the ticket"
+      >
+        {label}
+      </button>
+      {transcript && state !== "error" ? (
+        <div className="line-clamp-2 text-[10px] italic text-cream/40">
+          “{transcript}”
+        </div>
+      ) : null}
+      {state === "error" ? (
+        <div className="text-[10px] text-accentRose">{errorMsg}</div>
+      ) : null}
     </div>
   );
 }

@@ -346,6 +346,43 @@ async def get_extractor_info():
     return {"extractor": type(extractor).__name__}
 
 
+@app.post("/api/order/readback")
+async def order_readback():
+    """Synthesize the live order ticket as audio so the operator (or caller,
+    via the browser) can hear the kitchen-bound order spoken back.
+
+    Runs Piper on CPU off the main event loop — moshi's GPU is never touched.
+    Returns audio/wav (mono, ~22 kHz) plus the spoken text as a header for
+    debugging.
+    """
+    from starlette.responses import Response
+    from tts import synth_readback
+
+    state = store.current
+    if state is None:
+        raise HTTPException(404, "no active call")
+    if not state.order.active_items:
+        raise HTTPException(409, "order is empty — nothing to read back")
+
+    try:
+        wav_bytes, text = await asyncio.to_thread(synth_readback, state.order)
+    except FileNotFoundError as e:
+        raise HTTPException(503, f"Piper voice files missing: {e}")
+    except Exception as e:
+        log.exception("TTS readback failed")
+        raise HTTPException(500, f"readback synthesis failed: {e}")
+
+    log.info("readback synthesized (%d bytes, %d chars text)", len(wav_bytes), len(text))
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={
+            "X-Readback-Text": text[:512],  # for DevTools / debugging
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/events")
 async def events():
     queue = store.subscribe()

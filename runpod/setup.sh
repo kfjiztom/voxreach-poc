@@ -182,7 +182,32 @@ pip install \
   "pydantic>=2.9" \
   "httpx>=0.27" \
   "sse-starlette>=2.1" \
-  "python-multipart>=0.0.12"
+  "python-multipart>=0.0.12" \
+  "piper-tts>=1.2.0"
+
+# Download a Piper voice for the order readback feature (~50 MB, CPU-only TTS).
+# Used by /api/order/readback to speak the kitchen ticket back to the operator
+# WITHOUT touching moshi's GPU. Default voice is en_US-amy-medium (clear female).
+# Override with VOXREACH_TTS_VOICE before first run if you want a different voice.
+PIPER_VOICES_DIR="${WORKSPACE}/.cache/piper-voices"
+PIPER_VOICE="${VOXREACH_TTS_VOICE:-en_US-amy-medium}"
+mkdir -p "${PIPER_VOICES_DIR}"
+PIPER_BASE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US"
+# Piper voice paths follow the pattern: en/en_US/<speaker>/<quality>/<file>
+PIPER_SPEAKER=$(echo "${PIPER_VOICE}" | sed -E 's/^en_US-([^-]+)-.*$/\1/')
+PIPER_QUALITY=$(echo "${PIPER_VOICE}" | sed -E 's/^en_US-[^-]+-(.+)$/\1/')
+if [ ! -f "${PIPER_VOICES_DIR}/${PIPER_VOICE}.onnx" ]; then
+  echo "==> Downloading Piper voice ${PIPER_VOICE} ..."
+  curl -fsSL -o "${PIPER_VOICES_DIR}/${PIPER_VOICE}.onnx" \
+    "${PIPER_BASE_URL}/${PIPER_SPEAKER}/${PIPER_QUALITY}/${PIPER_VOICE}.onnx" || \
+    echo "    (download failed — readback button will return 503 until you fetch manually)"
+  curl -fsSL -o "${PIPER_VOICES_DIR}/${PIPER_VOICE}.onnx.json" \
+    "${PIPER_BASE_URL}/${PIPER_SPEAKER}/${PIPER_QUALITY}/${PIPER_VOICE}.onnx.json" || \
+    echo "    (config download failed — same as above)"
+else
+  echo "==> Piper voice ${PIPER_VOICE} already cached at ${PIPER_VOICES_DIR}"
+fi
+
 deactivate
 phase_done
 
