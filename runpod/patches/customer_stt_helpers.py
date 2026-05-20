@@ -31,7 +31,7 @@ from __future__ import annotations
 # Marker on the first line so the patcher can detect idempotency.
 HELPERS_BLOCK = r'''
 
-# VoxReach customer STT bridge v2 (faster-whisper backend)
+# VoxReach customer STT bridge v3 (faster-whisper backend, eager-load)
 import numpy as _vox_np
 import os as _vox_os_stt
 import queue as _vox_queue
@@ -295,5 +295,17 @@ def voxreach_customer_stt_flush(timeout_s=5.0):
         _vox_time_stt.sleep(0.05)
     _vox_stt_log("flush timed out with %d STT jobs still pending", _vox_stt_jobs.unfinished_tasks)
 
-# end VoxReach customer STT bridge v2
+
+# Eager-load STT at server import time so CTranslate2's C extension does
+# its model init (~30-40s, holds the GIL the whole time) BEFORE moshi's
+# asyncio loop starts accepting WS frames. Without this, the first call
+# triggers a lazy load that GIL-starves the event loop and the browser
+# hits an inactivity timeout. Set VOXREACH_STT_EAGER_LOAD=0 to disable.
+if _VOX_STT_ENABLED and _vox_os_stt.environ.get("VOXREACH_STT_EAGER_LOAD", "1") == "1":
+    _vox_stt_log("eager-loading STT model at server startup (will block ~40s) ...")
+    _vox_stt_lazy_load()
+    _vox_stt_ensure_worker()
+    _vox_stt_log("STT eager-load complete; moshi can accept calls now")
+
+# end VoxReach customer STT bridge v3
 '''

@@ -46,8 +46,10 @@ from customer_stt_helpers import HELPERS_BLOCK as STT_HELPERS_BLOCK
 
 MARKER_STT_HELPERS_V1 = "# VoxReach customer STT bridge v1"
 MARKER_STT_HELPERS_V2 = "# VoxReach customer STT bridge v2 (faster-whisper backend)"
+MARKER_STT_HELPERS_V3 = "# VoxReach customer STT bridge v3 (faster-whisper backend, eager-load)"
 MARKER_STT_HELPERS_END_V1 = "# end VoxReach customer STT bridge v1"
 MARKER_STT_HELPERS_END_V2 = "# end VoxReach customer STT bridge v2"
+MARKER_STT_HELPERS_END_V3 = "# end VoxReach customer STT bridge v3"
 MARKER_STT_HOOK = "# VoxReach STT: forward customer PCM"
 MARKER_STT_FLUSH = "# VoxReach STT: flush remaining customer audio"
 MARKER_BRIDGE_HELPERS_END = "# end VoxReach transcript bridge helpers"
@@ -105,11 +107,25 @@ def patch(server_py: Path) -> dict:
     results: dict[str, str] = {}
 
     # 1) STT helpers block — append after the transcript-bridge helpers.
-    # If a v1 block (Kyutai backend) is present, replace it in place with v2.
-    if MARKER_STT_HELPERS_V2 in text:
+    # If a v1 (Kyutai) or v2 (faster-whisper without eager-load) block is
+    # present, replace it in place with v3 (faster-whisper + eager-load).
+    if MARKER_STT_HELPERS_V3 in text:
         results["stt_helpers"] = "already"
+    elif MARKER_STT_HELPERS_V2 in text:
+        # Upgrade v2 -> v3 by replacing the whole previous block.
+        start = text.find(MARKER_STT_HELPERS_V2)
+        end_marker_pos = text.find(MARKER_STT_HELPERS_END_V2, start)
+        if start == -1 or end_marker_pos == -1:
+            raise ValueError(
+                "STT v2 markers found but boundary missing — cannot upgrade safely. "
+                "Inspect server.py manually."
+            )
+        end_full = end_marker_pos + len(MARKER_STT_HELPERS_END_V2)
+        replacement = STT_HELPERS_BLOCK.lstrip("\n")
+        text = text[:start] + replacement.rstrip("\n") + text[end_full:]
+        results["stt_helpers"] = "upgraded v2->v3"
     elif MARKER_STT_HELPERS_V1 in text:
-        # Upgrade v1 -> v2 by replacing the whole previous block.
+        # Upgrade v1 -> v3 by replacing the whole previous block.
         start = text.find(MARKER_STT_HELPERS_V1)
         end_marker_pos = text.find(MARKER_STT_HELPERS_END_V1, start)
         if start == -1 or end_marker_pos == -1:
@@ -118,10 +134,9 @@ def patch(server_py: Path) -> dict:
                 "Inspect server.py manually."
             )
         end_full = end_marker_pos + len(MARKER_STT_HELPERS_END_V1)
-        # Strip the new block's leading "\n\n" so we don't grow blank lines
         replacement = STT_HELPERS_BLOCK.lstrip("\n")
         text = text[:start] + replacement.rstrip("\n") + text[end_full:]
-        results["stt_helpers"] = "upgraded v1->v2"
+        results["stt_helpers"] = "upgraded v1->v3"
     else:
         if MARKER_BRIDGE_HELPERS_END not in text:
             raise ValueError(
