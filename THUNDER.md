@@ -190,6 +190,54 @@ Then in the **Thunder dashboard**:
 
 ---
 
+## 7a. Known limitation: audio jitter on long calls
+
+**This is intrinsic to Thunder Compute's GPU virtualization and cannot be fixed at the moshi layer.** Expect it. Plan around it.
+
+### Symptom
+
+On calls longer than ~30 seconds, you'll see in the browser audio processor logs:
+
+```
+'Dropping packets' '200.0' '200.0'
+'Packet dropped' '120.0'
+Increased maxBuffer to 80.0
+'Missed some audio' 96
+'Increased partial buffer to 25.0'
+```
+
+And the Server Audio Stats panel will show:
+- **Latency**: 5-25 seconds (grows with call duration)
+- **Missed audio**: 2-15 seconds (10-15% of total)
+- **Buffer**: pinned at maxBuffer cap of 80
+
+### Why it happens
+
+Thunder Compute virtualizes GPU access. When neighbor tenants grab cycles, moshi falls behind real-time. When they release, moshi generates audio *faster than real-time* to catch up. The browser's audio queue buffers the bursts, grows past its `maxBuffer` cap (default 80 chunks), and starts dropping packets.
+
+The net effect: by the end of a 2-minute call, what you hear is 10-20 seconds behind what Vox is actually generating. The model has already moved past the conversation point the customer hears.
+
+### Why it can't be fixed on Thunder
+
+The audio loop in moshi.server is GPU-paced, not wall-clock-paced. Adding a `sleep(80ms)` after each generation step would break the model — moshi expects to consume audio frames as fast as they arrive. The jitter ultimately comes from the GPU scheduling layer, which Thunder controls, not us.
+
+### What to do about it
+
+| For | Use |
+|---|---|
+| Persona iteration, sidecar work, UI development | Thunder (you'll tolerate the jitter — it's a dev environment) |
+| Investor demos | Lambda Labs H100 — see [LAMBDA.md](LAMBDA.md) |
+| Customer pilots | Lambda Labs H100 or CoreWeave bare-metal |
+| Production | Bare-metal H100 dedicated, OR architectural shift to MoshiRAG (Phase B) |
+
+The model and our patches are correct. The infrastructure is the variable.
+
+### How to verify it's the platform and not us
+
+Quickest check: try the same `runpod/start.sh` flow on Lambda Labs (see [LAMBDA.md](LAMBDA.md)) and compare the audio stats. Identical code, identical persona, dramatically different audio behavior = platform-induced jitter.
+
+---
+
 ## 8. Common issues
 
 | Symptom | Cause | Fix |
