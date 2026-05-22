@@ -4,30 +4,37 @@ import { BackstagePane } from "@/components/BackstagePane";
 import { CallPane } from "@/components/CallPane";
 import { Header } from "@/components/Header";
 import { IframeCallPane } from "@/components/IframeCallPane";
+import { NativeCallPane } from "@/components/NativeCallPane";
 import { useCallState } from "@/lib/useCallState";
 
-// MOCK_MODE drives the demo from canned scenarios — used when no live audio backend is wired.
-// Set NEXT_PUBLIC_MOCK_MODE=false on the pod to disable the mock scenario buttons in the
-// regular CallPane. (Iframe mode below uses scenarios as backstage drivers regardless.)
 const MOCK_MODE = (process.env.NEXT_PUBLIC_MOCK_MODE ?? "true") !== "false";
 
-// PersonaPlex iframe URL — when set, the left pane embeds the live PersonaPlex UI.
-// Leave unset for fully-mock dev mode. Example value:
-//   https://abc123-8998.proxy.runpod.net
+// Pane resolution priority (first non-empty wins):
+//   1. NEXT_PUBLIC_MOSHI_WS_URL → NativeCallPane (Phase 1+, our own audio client)
+//      e.g. ws://localhost:8998/api/chat
+//   2. NEXT_PUBLIC_PERSONAPLEX_URL → IframeCallPane (legacy, embeds NVIDIA's stock UI)
+//      e.g. http://localhost:8998
+//   3. neither → CallPane (mock/scenario mode for offline frontend dev)
+const MOSHI_WS_URL = process.env.NEXT_PUBLIC_MOSHI_WS_URL?.trim();
 const PERSONAPLEX_URL = process.env.NEXT_PUBLIC_PERSONAPLEX_URL?.trim();
 
 export default function HomePage() {
   const { state } = useCallState();
 
+  let leftPane: React.ReactNode;
+  if (MOSHI_WS_URL) {
+    leftPane = <NativeCallPane state={state} moshiWsUrl={MOSHI_WS_URL} />;
+  } else if (PERSONAPLEX_URL) {
+    leftPane = <IframeCallPane state={state} iframeUrl={PERSONAPLEX_URL} />;
+  } else {
+    leftPane = <CallPane state={state} mockMode={MOCK_MODE} />;
+  }
+
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
       <main className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        {PERSONAPLEX_URL ? (
-          <IframeCallPane state={state} iframeUrl={PERSONAPLEX_URL} />
-        ) : (
-          <CallPane state={state} mockMode={MOCK_MODE} />
-        )}
+        {leftPane}
         <BackstagePane state={state} />
       </main>
     </div>
