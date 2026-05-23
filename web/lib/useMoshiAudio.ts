@@ -88,12 +88,27 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
 
   const [state, setState] = useState<AudioState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
-  const [decodeStats, setDecodeStats] = useState({
+
+  // Counters live in a ref to avoid re-rendering on every page (moshi sends
+  // ~12-15 pages/sec — re-rendering on each kills UI responsiveness).
+  // A 250ms interval copies the ref into state for the debug panel.
+  const decodeStatsRef = useRef({
     pagesIn: 0,
     decodesOk: 0,
     decodesFailed: 0,
     samplesPlayed: 0,
   });
+  const [decodeStats, setDecodeStats] = useState(decodeStatsRef.current);
+  const logFailuresLeftRef = useRef(3);
+
+  // Flush counter ref to state ~4 Hz so the debug panel updates without
+  // re-rendering on every audio frame.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setDecodeStats({ ...decodeStatsRef.current });
+    }, 250);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Resources to clean up on stop()
   // (mic stream is owned by opus-recorder — calling recorder.stop()
@@ -213,14 +228,14 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
         return;
       }
 
-      setDecodeStats((s) => ({ ...s, pagesIn: s.pagesIn + 1 }));
+      decodeStatsRef.current.pagesIn += 1;
 
       decoder
         .decode(page)
         .then(({ channelData, samplesDecoded, sampleRate }) => {
           if (samplesDecoded === 0 || channelData.length === 0 || !channelData[0]?.length) {
             // OpusHead / OpusTags header pages have no audio — counts as ok decode
-            setDecodeStats((s) => ({ ...s, decodesOk: s.decodesOk + 1 }));
+            decodeStatsRef.current.decodesOk += 1;
             return;
           }
           const ch0 = channelData[0];
@@ -240,16 +255,13 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           src.start(startAt);
           nextStartRef.current = startAt + buf.duration;
 
-          setDecodeStats((s) => ({
-            ...s,
-            decodesOk: s.decodesOk + 1,
-            samplesPlayed: s.samplesPlayed + samplesDecoded,
-          }));
+          decodeStatsRef.current.decodesOk += 1;
+          decodeStatsRef.current.samplesPlayed += samplesDecoded;
         })
         .catch((err) => {
-          setDecodeStats((s) => ({ ...s, decodesFailed: s.decodesFailed + 1 }));
-          // Log first 3 failures to avoid console spam
-          if (decodeStats.decodesFailed < 3) {
+          decodeStatsRef.current.decodesFailed += 1;
+          if (logFailuresLeftRef.current > 0) {
+            logFailuresLeftRef.current -= 1;
             // eslint-disable-next-line no-console
             console.warn("[moshi-audio] decode failed", {
               pageLen: page.length,
@@ -259,8 +271,6 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           }
         });
     },
-    // decodeStats.decodesFailed is only used for log gating — safe to omit from deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 

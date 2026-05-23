@@ -35,8 +35,20 @@ interface NativeCallPaneProps {
 export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
   const [voxText, setVoxText] = useState<string>("");
   const [showDebug, setShowDebug] = useState(false);
-  const [audioFramesRx, setAudioFramesRx] = useState(0);
-  const [audioFramesTx, setAudioFramesTx] = useState(0);
+
+  // Per-frame counters live in refs — moshi sends ~12-15 frames/sec, and
+  // calling setState on every frame triggers a render storm that freezes
+  // the UI (button clicks stop registering). A 250ms interval copies
+  // these refs into state so the debug panel still updates.
+  const framesRxRef = useRef(0);
+  const framesTxRef = useRef(0);
+  const [framesDisplay, setFramesDisplay] = useState({ rx: 0, tx: 0 });
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setFramesDisplay({ rx: framesRxRef.current, tx: framesTxRef.current });
+    }, 250);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Audio hook handles mic capture + opus encoding/decoding + playback.
   // sessionRef gives the audio hook access to the WS sender without
@@ -46,7 +58,7 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
   const audio = useMoshiAudio({
     onCapturePage: (page) => {
       sessionRef.current?.sendAudioFrame(page);
-      setAudioFramesTx((n) => n + 1);
+      framesTxRef.current += 1;
     },
   });
 
@@ -54,13 +66,14 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
     wsUrl: moshiWsUrl,
     onText: (token) => setVoxText((prev) => prev + token),
     onAudio: (oggPage) => {
-      setAudioFramesRx((n) => n + 1);
+      framesRxRef.current += 1;
       audio.pushOggPage(oggPage);
     },
     onHandshake: () => {
       setVoxText("");
-      setAudioFramesRx(0);
-      setAudioFramesTx(0);
+      framesRxRef.current = 0;
+      framesTxRef.current = 0;
+      setFramesDisplay({ rx: 0, tx: 0 });
       // Mic capture starts AFTER handshake — moshi is ready to receive
       // and we don't want to waste mic frames during connection setup.
       void audio.start();
@@ -221,9 +234,9 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
             <div>WS URL:</div>
             <div className="truncate text-ink" title={moshiWsUrl}>{moshiWsUrl}</div>
             <div>Audio frames RX (server→us):</div>
-            <div className="text-ink">{audioFramesRx}</div>
+            <div className="text-ink">{framesDisplay.rx}</div>
             <div>Audio frames TX (us→server):</div>
-            <div className="text-ink">{audioFramesTx}</div>
+            <div className="text-ink">{framesDisplay.tx}</div>
             <div>Decoder pages in:</div>
             <div className="text-ink">{audio.decodeStats.pagesIn}</div>
             <div>Decoder ok:</div>
