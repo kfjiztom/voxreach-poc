@@ -5,6 +5,12 @@ export const metadata: Metadata = {
   title: "VoxReach · Hearth & Pass demo",
   description:
     "Live demo of the VoxReach AI receptionist for Hearth & Pass — built on PersonaPlex for full-duplex grounded voice.",
+  // Point browsers explicitly at our SVG icon so they don't fall back to
+  // requesting /favicon.ico and 404'ing.
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    shortcut: "/icon.svg",
+  },
 };
 
 // Belt-and-suspenders cache-busting. The next.config.mjs headers() block is the

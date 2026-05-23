@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Hearth & Pass brand mark for VoxReach POC.
+       Solid moss-green circle with a serif "V" — matches BackstagePane palette. -->
+  <circle cx="32" cy="32" r="30" fill="#3D5247"/>
+  <text x="32" y="44" font-family="Georgia, serif" font-size="36" font-weight="700"
+        text-anchor="middle" fill="#F5EBD9">V</text>
+</svg>
