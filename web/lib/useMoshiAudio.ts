@@ -66,6 +66,12 @@ const DEFAULT_LEAD = 0.05;
 const ENCODER_SAMPLE_RATE = 24000;        // moshi expects 24 kHz mic input
 const PLAYBACK_SAMPLE_RATE = 48000;        // moshi OUTPUTS 48 kHz audio — verified from decoder reports
 const MAX_PLAYBACK_LEAD_SEC = 0.25;        // drop frames if the queue is more than 250 ms ahead of real time
+// RMS amplitude below this counts as silence — skip queuing so we don't push
+// near-zero noise into the playback graph. moshi's full-duplex LM emits
+// continuous audio even when "idle" (it's always thinking) — most of those
+// frames are mathematical silence (~1e-5 RMS) but enough to feel like white
+// noise played back-to-back. Real speech sits well above 0.005.
+const SILENCE_RMS_THRESHOLD = 0.001;
 
 /* opus-recorder is a CommonJS module — we lazy import it on .start() to
    avoid pulling Web Worker setup into the SSR bundle. */
@@ -300,13 +306,28 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           }
           const ch0 = channelData[0];
 
+          // Silence gate — moshi emits continuous audio even when "idle",
+          // and those near-zero frames sound like white noise when played
+          // back-to-back through the speakers. Skip them entirely. We
+          // ALSO advance nextStartRef so silence intervals don't show
+          // up as latency: when Vox starts speaking again the first real
+          // frame plays immediately at "now + 5 ms" instead of after a
+          // queue of silent buffers.
+          let sumSquares = 0;
+          for (let i = 0; i < ch0.length; i++) sumSquares += ch0[i] * ch0[i];
+          const rms = Math.sqrt(sumSquares / ch0.length);
+          if (rms < SILENCE_RMS_THRESHOLD) {
+            decodeStatsRef.current.decodesOk += 1;
+            // Don't accumulate silence in the playback queue
+            const ctxNow = ctx.currentTime;
+            if (nextStartRef.current < ctxNow) nextStartRef.current = ctxNow;
+            return;
+          }
+
           // Cap latency: if the playback head is already too far ahead of
           // wall clock, the queue is full (moshi probably burst-sent a few
           // frames after a stall). Drop this frame so already-queued
           // buffers play out and nextStartRef catches back up to now.
-          // Trade-off: a dropped frame = ~80ms of audio lost (one syllable
-          // gap), but latency self-corrects in <1 second vs growing
-          // unbounded over the call.
           const now = ctx.currentTime;
           if (nextStartRef.current > now + MAX_PLAYBACK_LEAD_SEC) {
             decodeStatsRef.current.framesDroppedForLag += 1;

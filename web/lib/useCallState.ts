@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import type { CallState, OrderItem, SidecarEvent } from "./types";
 import { emptyState } from "./types";
+
+export type SseStatus = "connecting" | "open" | "closed" | "error";
 
 type Action =
   | { type: "snapshot"; payload: CallState }
@@ -130,11 +132,16 @@ function reducer(state: CallState, action: Action): CallState {
 
 export function useCallState() {
   const [state, dispatch] = useReducer(reducer, emptyState());
+  const [sseStatus, setSseStatus] = useState<SseStatus>("connecting");
+  const [sseEventCount, setSseEventCount] = useState(0);
 
   useEffect(() => {
     const es = new EventSource("/api/sidecar/events");
 
+    const bumpCount = () => setSseEventCount((n) => n + 1);
+
     const handle = (ev: MessageEvent, eventName: SidecarEvent["event"]) => {
+      bumpCount();
       try {
         const parsed = JSON.parse(ev.data);
         // Sidecar emits {event, data}; pluck out data, re-tag with event name
@@ -147,6 +154,8 @@ export function useCallState() {
         console.error("SSE parse error", err, ev.data);
       }
     };
+
+    es.onopen = () => setSseStatus("open");
 
     const events: SidecarEvent["event"][] = [
       "snapshot",
@@ -168,16 +177,19 @@ export function useCallState() {
     }
     // Heartbeat from the server's HTTP/2-keepalive flush — silently absorb,
     // never dispatch (avoids "unknown event 'ready'" console noise).
-    es.addEventListener("ready", () => {});
+    es.addEventListener("ready", () => bumpCount());
 
     es.onerror = (err) => {
+      // EventSource auto-reconnects; show "error" briefly then "connecting"
+      setSseStatus(es.readyState === EventSource.CLOSED ? "closed" : "error");
       console.warn("SSE connection error", err);
     };
 
     return () => {
       es.close();
+      setSseStatus("closed");
     };
   }, []);
 
-  return { state, dispatch };
+  return { state, dispatch, sseStatus, sseEventCount };
 }
