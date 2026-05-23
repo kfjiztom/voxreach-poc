@@ -26,6 +26,7 @@ from sse_starlette.sse import EventSourceResponse
 from knowledge_search import get_search
 from mock_transcript import play_mock_call
 from order_extractor import final_order_check, get_extractor, validate_against_transcript
+from persona_renderer import render_persona_loop, render_persona_now
 from pos_stub import write_order
 from schema import LatencyMetric, RetrievalHit, SSEEvent, TranscriptTurn
 from state import store
@@ -50,6 +51,14 @@ async def lifespan(_: FastAPI):
         except Exception as e:
             log.warning("RAG warmup failed: %s", e)
     asyncio.create_task(_warm_rag())
+
+    # Render the time-aware persona once now (so the FIRST call gets a fresh
+    # one) and then keep re-rendering every 30s in the background. moshi
+    # reads the file at WS-connect time so this is how Vox learns the
+    # current time + kitchen-open status without any moshi changes.
+    if render_persona_now():
+        log.info("rendered initial time-aware persona")
+    asyncio.create_task(render_persona_loop())
 
     yield
     log.info("voxreach sidecar shutting down")
