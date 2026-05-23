@@ -4,6 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useMoshiAudio } from "@/lib/useMoshiAudio";
 import { useMoshiSession, type MoshiConnectionState } from "@/lib/useMoshiSession";
+import {
+  PERSONAPLEX_VOICES,
+  DEFAULT_VOICE_FILE,
+  loadStoredVoice,
+  storeVoice,
+} from "@/lib/personaplexVoices";
 import type { CallState } from "@/lib/types";
 
 import { CallControls } from "./CallControls";
@@ -31,6 +37,15 @@ interface NativeCallPaneProps {
 export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCallPaneProps) {
   const [voxText, setVoxText] = useState<string>("");
   const [showDebug, setShowDebug] = useState(false);
+  const [voice, setVoice] = useState<string>(DEFAULT_VOICE_FILE);
+  // Restore the operator's last-used voice on mount
+  useEffect(() => {
+    setVoice(loadStoredVoice());
+  }, []);
+  const onVoiceChange = (file: string) => {
+    setVoice(file);
+    storeVoice(file);
+  };
 
   // Per-frame counters live in refs — moshi sends ~12-15 frames/sec, and
   // calling setState on every frame triggers a render storm that freezes
@@ -70,6 +85,7 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
 
   const session = useMoshiSession({
     wsUrl: moshiWsUrl,
+    voicePrompt: voice,
     onText: (token) => setVoxText((prev) => prev + token),
     onAudio: (oggPage) => {
       framesRxRef.current += 1;
@@ -175,6 +191,7 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
               </div>
               <div className="text-sm text-ink/80 leading-tight">
                 {audio.state === "running" ? "Mic live · Audio out OK" : audio.state === "starting" ? "Initializing mic…" : "Audio paused"}
+                <span className="ml-2 font-mono text-[10px] text-ink/40">voice: {voice.replace(".pt", "")}</span>
               </div>
             </div>
           </div>
@@ -188,26 +205,61 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
         </div>
       ) : (
         // Idle / pre-call — single tight card with the call button prominent
-        <div className="mb-3 flex items-center justify-between rounded-2xl border border-clay/60 bg-white px-4 py-3 shadow-sm">
-          <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-widest text-ink/40">
-              {session.state === "error" ? "Last call ended in error" : session.state === "closed" ? "Call ended" : "Ready"}
+        <div className="mb-3 rounded-2xl border border-clay/60 bg-white px-4 py-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-widest text-ink/40">
+                {session.state === "error" ? "Last call ended in error" : session.state === "closed" ? "Call ended" : "Ready"}
+              </div>
+              <div className="text-sm text-ink/80 leading-tight">
+                {session.state === "error" && session.lastError
+                  ? session.lastError
+                  : audio.state === "error" && audio.lastError
+                  ? `Mic / audio: ${audio.lastError}`
+                  : "Click to call Vox. Grant microphone access when prompted."}
+              </div>
             </div>
-            <div className="text-sm text-ink/80 leading-tight">
-              {session.state === "error" && session.lastError
-                ? session.lastError
-                : audio.state === "error" && audio.lastError
-                ? `Mic / audio: ${audio.lastError}`
-                : "Click to call Vox. Grant microphone access when prompted."}
-            </div>
+            <button
+              type="button"
+              onClick={onCall}
+              className="shrink-0 rounded-full bg-moss px-5 py-2 text-xs font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-moss/85"
+            >
+              ▶ Start call
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onCall}
-            className="rounded-full bg-moss px-5 py-2 text-xs font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-moss/85"
-          >
-            ▶ Start call
-          </button>
+          {/* Voice picker — only meaningful while idle, applies to next call */}
+          <div className="mt-3 flex items-center gap-2 border-t border-clay/30 pt-3">
+            <label htmlFor="voice-select" className="text-[10px] uppercase tracking-widest text-ink/40">
+              Voice
+            </label>
+            <select
+              id="voice-select"
+              value={voice}
+              onChange={(e) => onVoiceChange(e.target.value)}
+              className="flex-1 rounded-lg border border-clay/50 bg-cream/40 px-2 py-1 font-mono text-xs text-ink focus:border-moss focus:outline-none"
+            >
+              <optgroup label="Natural · Female">
+                {PERSONAPLEX_VOICES.filter((v) => v.category === "natural-female").map((v) => (
+                  <option key={v.file} value={v.file}>{v.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Natural · Male">
+                {PERSONAPLEX_VOICES.filter((v) => v.category === "natural-male").map((v) => (
+                  <option key={v.file} value={v.file}>{v.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Variety · Female">
+                {PERSONAPLEX_VOICES.filter((v) => v.category === "variety-female").map((v) => (
+                  <option key={v.file} value={v.file}>{v.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Variety · Male">
+                {PERSONAPLEX_VOICES.filter((v) => v.category === "variety-male").map((v) => (
+                  <option key={v.file} value={v.file}>{v.label}</option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
         </div>
       )}
 
