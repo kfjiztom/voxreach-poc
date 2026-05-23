@@ -18,19 +18,10 @@ interface NativeCallPaneProps {
 /**
  * Native call pane — direct WebSocket to moshi.server, no iframe.
  *
- * Phase 1 status:
- *   ✅ WebSocket lifecycle (connect, handshake, text stream, close)
- *   ✅ Vox-side typewriter transcript (from moshi text tokens, 0x02 frames)
- *   ⏳ Mic capture + opus encoding — stubbed (will be wired in Phase 1B)
- *   ⏳ Audio playback (opus decode + WebAudio) — stubbed (Phase 1B)
- *   ⏳ Audio stats panel (latency, missed audio) — stubbed
- *
- * Even without mic/playback wired, this pane proves out:
- *   - the WS connection succeeds
- *   - the persona override actually loads (we see Vox's greeting text stream)
- *   - the connection lifecycle is correct
- *
- * Phase 1B will add the audio worklets and wire up the actual voice loop.
+ * Layout is intentionally tight so the right-hand BackstagePane gets visual
+ * priority: the call pane is just "phone in your hand", the order ticket is
+ * "what the kitchen sees". Compact header, prominent activity ring, scrollable
+ * transcript that's clearly bounded.
  */
 export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
   const [voxText, setVoxText] = useState<string>("");
@@ -38,21 +29,31 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
 
   // Per-frame counters live in refs — moshi sends ~12-15 frames/sec, and
   // calling setState on every frame triggers a render storm that freezes
-  // the UI (button clicks stop registering). A 250ms interval copies
-  // these refs into state so the debug panel still updates.
+  // the UI. A 250ms interval copies these refs into state for display.
   const framesRxRef = useRef(0);
   const framesTxRef = useRef(0);
   const [framesDisplay, setFramesDisplay] = useState({ rx: 0, tx: 0 });
+  // Activity pulse — when TX/RX deltas are non-zero we know mic/voice
+  // are active. Used to drive the visual mic/voice indicators.
+  const lastFramesRef = useRef({ rx: 0, tx: 0 });
+  const [activity, setActivity] = useState<{ micActive: boolean; voxActive: boolean }>({
+    micActive: false,
+    voxActive: false,
+  });
   useEffect(() => {
     const id = window.setInterval(() => {
-      setFramesDisplay({ rx: framesRxRef.current, tx: framesTxRef.current });
+      const rx = framesRxRef.current;
+      const tx = framesTxRef.current;
+      const micActive = tx > lastFramesRef.current.tx;
+      const voxActive = rx > lastFramesRef.current.rx;
+      lastFramesRef.current = { rx, tx };
+      setFramesDisplay({ rx, tx });
+      setActivity({ micActive, voxActive });
     }, 250);
     return () => window.clearInterval(id);
   }, []);
 
   // Audio hook handles mic capture + opus encoding/decoding + playback.
-  // sessionRef gives the audio hook access to the WS sender without
-  // re-creating the recorder when the session object identity changes.
   const sessionRef = useRef<{ sendAudioFrame: (p: Uint8Array) => void } | null>(null);
 
   const audio = useMoshiAudio({
@@ -73,9 +74,8 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
       setVoxText("");
       framesRxRef.current = 0;
       framesTxRef.current = 0;
+      lastFramesRef.current = { rx: 0, tx: 0 };
       setFramesDisplay({ rx: 0, tx: 0 });
-      // Mic capture starts AFTER handshake — moshi is ready to receive
-      // and we don't want to waste mic frames during connection setup.
       void audio.start();
     },
     onError: () => {
@@ -83,7 +83,6 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
     },
   });
 
-  // Keep sessionRef in sync so the capture callback can send frames
   sessionRef.current = { sendAudioFrame: session.sendAudioFrame };
 
   // Stop audio whenever the WS leaves the active states
@@ -95,7 +94,6 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
     ) {
       audio.stop();
     }
-    // We intentionally only react to session.state changes here
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.state]);
 
@@ -108,7 +106,6 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
     }
   }, [session, audio]);
 
-  // Reflect WS state in the same status-pill UI the rest of the app uses.
   const sessionLabel = labelForSession(session.state);
 
   // Elapsed timer
@@ -132,22 +129,22 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
   }, [session.state]);
 
   const isActive = session.state === "connecting" || session.state === "handshake" || session.state === "connected";
+  const isIdle = session.state === "idle" || session.state === "closed" || session.state === "error";
 
   return (
-    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-cream p-6 lg:p-10">
-      <div className="mb-4 flex items-start justify-between">
-        <div>
-          <div className="font-serif text-3xl text-ink">Call Hearth &amp; Pass</div>
-          <div className="mt-1 text-sm text-ink/60">
-            (515) 555-0100 · Native audio · 123 Locust St, Des Moines IA
-          </div>
+    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-cream p-4 lg:p-6">
+      {/* Compact header strip */}
+      <div className="mb-3 flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="font-serif text-xl text-ink leading-tight">Call Hearth &amp; Pass</div>
+          <div className="text-[11px] text-ink/55">(515) 555-0100 · Native audio</div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className={`rounded-full px-3 py-1 text-[11px] uppercase tracking-widest ${sessionLabel.cls}`}>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-widest ${sessionLabel.cls}`}>
             {sessionLabel.text}
           </span>
           {isActive && (
-            <span className="font-mono text-sm text-ink/70">
+            <span className="font-mono text-xs text-ink/70 tabular-nums">
               {String(Math.floor(elapsedSec / 60)).padStart(2, "0")}:
               {String(elapsedSec % 60).padStart(2, "0")}
             </span>
@@ -155,100 +152,111 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
         </div>
       </div>
 
-      {/* Main call surface */}
-      <div className="mb-4 min-h-0 flex-1 rounded-3xl border border-clay/70 bg-white p-6 shadow-sm">
-        <div className="flex h-full flex-col">
-          {/* Idle / pre-call state */}
-          {session.state === "idle" || session.state === "closed" || session.state === "error" ? (
-            <div className="flex flex-1 flex-col items-center justify-center text-center">
-              <div className="mb-4 text-5xl">📞</div>
-              <div className="mb-2 font-serif text-2xl text-ink">
-                Ready to call Vox
+      {/* Active-call activity strip — compact, replaces the big phone emoji surface */}
+      {isActive ? (
+        <div className="mb-3 flex items-center justify-between rounded-2xl border border-clay/60 bg-white px-4 py-3 shadow-sm">
+          <div className="flex items-center gap-4">
+            <ActivityRing micActive={activity.micActive} voxActive={activity.voxActive} state={session.state} />
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-widest text-ink/40">
+                {session.state === "connecting" && "Opening line"}
+                {session.state === "handshake" && "Loading persona"}
+                {session.state === "connected" && (activity.voxActive ? "Vox speaking" : activity.micActive ? "Listening" : "Connected")}
               </div>
-              <div className="mb-6 max-w-md text-sm text-ink/60">
-                {session.state === "error" && session.lastError
-                  ? `Last attempt failed: ${session.lastError}`
-                  : audio.state === "error" && audio.lastError
-                  ? `Mic / audio setup failed: ${audio.lastError}`
-                  : "Click below to start the call. Grant microphone access when prompted."}
+              <div className="text-sm text-ink/80 leading-tight">
+                {audio.state === "running" ? "Mic live · Audio out OK" : audio.state === "starting" ? "Initializing mic…" : "Audio paused"}
               </div>
-              <button
-                type="button"
-                onClick={onCall}
-                className="rounded-full bg-moss px-6 py-3 text-sm font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-moss/85"
-              >
-                ▶ Start call
-              </button>
             </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCall}
+            className="rounded-full bg-persimmon px-4 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-persimmonDark"
+          >
+            ■ End call
+          </button>
+        </div>
+      ) : (
+        // Idle / pre-call — single tight card with the call button prominent
+        <div className="mb-3 flex items-center justify-between rounded-2xl border border-clay/60 bg-white px-4 py-3 shadow-sm">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-ink/40">
+              {session.state === "error" ? "Last call ended in error" : session.state === "closed" ? "Call ended" : "Ready"}
+            </div>
+            <div className="text-sm text-ink/80 leading-tight">
+              {session.state === "error" && session.lastError
+                ? session.lastError
+                : audio.state === "error" && audio.lastError
+                ? `Mic / audio: ${audio.lastError}`
+                : "Click to call Vox. Grant microphone access when prompted."}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCall}
+            className="rounded-full bg-moss px-5 py-2 text-xs font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-moss/85"
+          >
+            ▶ Start call
+          </button>
+        </div>
+      )}
+
+      {/* Transcript — bounded scroll so it doesn't take over the pane */}
+      <div className="mb-3 min-h-0 flex-1 overflow-hidden rounded-2xl border border-clay/60 bg-white shadow-sm">
+        <div className="border-b border-clay/30 px-4 py-2 text-[10px] uppercase tracking-widest text-ink/40">
+          Vox transcript
+        </div>
+        <div className="h-full overflow-y-auto p-4 font-serif text-base leading-relaxed text-ink">
+          {voxText ? (
+            <span>{voxText}</span>
           ) : (
-            <>
-              {/* Connecting / connected state — show transcript stream */}
-              <div className="mb-3 text-xs uppercase tracking-widest text-ink/40">
-                Vox says
-              </div>
-              <div className="min-h-[16rem] flex-1 overflow-y-auto rounded-2xl bg-cream/70 p-4 font-serif text-lg leading-relaxed text-ink">
-                {voxText ? (
-                  <span>{voxText}</span>
-                ) : (
-                  <span className="italic text-ink/30">
-                    {session.state === "connecting" && "Connecting to Vox..."}
-                    {session.state === "handshake" && "Loading persona..."}
-                    {session.state === "connected" && "Waiting for Vox to greet you..."}
-                  </span>
-                )}
-              </div>
-            </>
+            <span className="italic text-ink/30">
+              {isIdle && "Transcript will appear here when you call."}
+              {session.state === "connecting" && "Connecting to Vox…"}
+              {session.state === "handshake" && "Loading persona…"}
+              {session.state === "connected" && "Waiting for Vox to greet you…"}
+            </span>
           )}
         </div>
       </div>
 
-      {/* Footer: call controls + debug toggle */}
-      <div className="rounded-2xl border border-clay/70 bg-white/60 p-4">
-        <div className="flex items-center justify-between">
-          {isActive ? (
-            <button
-              type="button"
-              onClick={onCall}
-              className="rounded-full bg-persimmon px-5 py-2 text-xs font-semibold uppercase tracking-widest text-cream transition-colors hover:bg-persimmonDark"
-            >
-              ■ End call
-            </button>
-          ) : (
-            <div className="text-xs text-ink/50">Backstage panel shows live order extraction →</div>
-          )}
-          <button
-            type="button"
-            onClick={() => setShowDebug((v) => !v)}
-            className="text-[10px] uppercase tracking-widest text-ink/40 hover:text-ink/70"
-          >
-            {showDebug ? "Hide" : "Show"} debug
-          </button>
-        </div>
+      {/* Footer: debug toggle only — call button is now in the activity strip above */}
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-ink/40">
+        <span>Backstage panel shows live order extraction →</span>
+        <button
+          type="button"
+          onClick={() => setShowDebug((v) => !v)}
+          className="hover:text-ink/70"
+        >
+          {showDebug ? "Hide" : "Show"} debug
+        </button>
+      </div>
 
-        {showDebug && (
-          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-ink/60">
+      {showDebug && (
+        <div className="mt-2 rounded-xl border border-clay/60 bg-white/80 p-3">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-[10px] text-ink/60">
             <div>WS state:</div>
             <div className="text-ink">{session.state}</div>
             <div>Audio state:</div>
             <div className="text-ink">{audio.state}</div>
             <div>WS URL:</div>
             <div className="truncate text-ink" title={moshiWsUrl}>{moshiWsUrl}</div>
-            <div>Audio frames RX (server→us):</div>
-            <div className="text-ink">{framesDisplay.rx}</div>
-            <div>Audio frames TX (us→server):</div>
-            <div className="text-ink">{framesDisplay.tx}</div>
-            <div>Decoder pages in:</div>
-            <div className="text-ink">{audio.decodeStats.pagesIn}</div>
-            <div>Decoder ok:</div>
-            <div className="text-ink">{audio.decodeStats.decodesOk}</div>
-            <div>Decoder failed:</div>
-            <div className={audio.decodeStats.decodesFailed > 0 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.decodesFailed}</div>
+            <div>Frames RX / TX:</div>
+            <div className="text-ink">{framesDisplay.rx} / {framesDisplay.tx}</div>
+            <div>Decoder ok / failed:</div>
+            <div className={audio.decodeStats.decodesFailed > 0 ? "text-persimmon" : "text-ink"}>
+              {audio.decodeStats.decodesOk} / {audio.decodeStats.decodesFailed}
+            </div>
             <div>Samples played:</div>
             <div className="text-ink">{audio.decodeStats.samplesPlayed.toLocaleString()}</div>
             <div>Frames dropped (lag cap):</div>
-            <div className={audio.decodeStats.framesDroppedForLag > 0 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.framesDroppedForLag}</div>
+            <div className={audio.decodeStats.framesDroppedForLag > 0 ? "text-persimmon" : "text-ink"}>
+              {audio.decodeStats.framesDroppedForLag}
+            </div>
             <div>Playback lead:</div>
-            <div className={audio.decodeStats.playbackLeadMs > 200 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.playbackLeadMs} ms</div>
+            <div className={audio.decodeStats.playbackLeadMs > 200 ? "text-persimmon" : "text-ink"}>
+              {audio.decodeStats.playbackLeadMs} ms
+            </div>
             <div>Vox text chars:</div>
             <div className="text-ink">{voxText.length}</div>
             <div>Backstage call ID:</div>
@@ -266,13 +274,49 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
               </>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Hidden — preserve the old CallControls integration so the backstage flow keeps working */}
       <div className="hidden">
         <CallControls status={state.status} mockMode={false} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Compact ring with two pulse layers — one for the caller's mic, one for
+ * Vox's voice. Animates when activity is detected on either side.
+ */
+function ActivityRing({
+  micActive,
+  voxActive,
+  state,
+}: {
+  micActive: boolean;
+  voxActive: boolean;
+  state: MoshiConnectionState;
+}) {
+  const isWaiting = state === "connecting" || state === "handshake";
+  return (
+    <div className="relative h-12 w-12 shrink-0">
+      {/* Outer ring — pulses when Vox is speaking */}
+      <div
+        className={`absolute inset-0 rounded-full border-2 transition-all duration-200 ${
+          voxActive ? "border-moss animate-ping" : "border-moss/30"
+        }`}
+      />
+      {/* Inner dot — fills when mic is active */}
+      <div
+        className={`absolute inset-2 rounded-full transition-all duration-200 ${
+          isWaiting
+            ? "bg-persimmon/60 animate-pulse"
+            : micActive
+            ? "bg-persimmon scale-110"
+            : "bg-moss"
+        }`}
+      />
     </div>
   );
 }
