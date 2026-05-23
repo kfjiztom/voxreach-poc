@@ -245,6 +245,10 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
             <div className={audio.decodeStats.decodesFailed > 0 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.decodesFailed}</div>
             <div>Samples played:</div>
             <div className="text-ink">{audio.decodeStats.samplesPlayed.toLocaleString()}</div>
+            <div>Frames dropped (lag cap):</div>
+            <div className={audio.decodeStats.framesDroppedForLag > 0 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.framesDroppedForLag}</div>
+            <div>Playback lead:</div>
+            <div className={audio.decodeStats.playbackLeadMs > 200 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.playbackLeadMs} ms</div>
             <div>Vox text chars:</div>
             <div className="text-ink">{voxText.length}</div>
             <div>Backstage call ID:</div>

@@ -49,6 +49,10 @@ export interface MoshiAudio {
     decodesOk: number;
     decodesFailed: number;
     samplesPlayed: number;
+    /** Frames discarded because the playback queue was too deep — keeps latency bounded. */
+    framesDroppedForLag: number;
+    /** Current playback-head lead over wall clock, in ms. Updated every 250ms. */
+    playbackLeadMs: number;
   };
   /** Open mic + warm decoder. After this, call `pushOggPage` with frames from the server. */
   start: () => Promise<void>;
@@ -59,7 +63,9 @@ export interface MoshiAudio {
 }
 
 const DEFAULT_LEAD = 0.05;
-const ENCODER_SAMPLE_RATE = 24000;
+const ENCODER_SAMPLE_RATE = 24000;        // moshi expects 24 kHz mic input
+const PLAYBACK_SAMPLE_RATE = 48000;        // moshi OUTPUTS 48 kHz audio — verified from decoder reports
+const MAX_PLAYBACK_LEAD_SEC = 0.25;        // drop frames if the queue is more than 250 ms ahead of real time
 
 /* opus-recorder is a CommonJS module — we lazy import it on .start() to
    avoid pulling Web Worker setup into the SSR bundle. */
@@ -97,14 +103,21 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     decodesOk: 0,
     decodesFailed: 0,
     samplesPlayed: 0,
+    framesDroppedForLag: 0,
+    playbackLeadMs: 0,
   });
   const [decodeStats, setDecodeStats] = useState(decodeStatsRef.current);
   const logFailuresLeftRef = useRef(3);
 
   // Flush counter ref to state ~4 Hz so the debug panel updates without
-  // re-rendering on every audio frame.
+  // re-rendering on every audio frame. Also computes live playback lead.
   useEffect(() => {
     const id = window.setInterval(() => {
+      const ctx = audioCtxRef.current;
+      if (ctx) {
+        const leadSec = Math.max(0, nextStartRef.current - ctx.currentTime);
+        decodeStatsRef.current.playbackLeadMs = Math.round(leadSec * 1000);
+      }
       setDecodeStats({ ...decodeStatsRef.current });
     }, 250);
     return () => window.clearInterval(id);
@@ -187,9 +200,15 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
 
       recorderRef.current = recorder;
 
-      // 4. AudioContext for playback
+      // 4. AudioContext for playback at moshi's OUTPUT sample rate (48 kHz),
+      //    not the mic encoder rate (24 kHz). Confirmed by reading the
+      //    `sampleRate` field from the first successful decode result —
+      //    moshi-personaplex outputs Ogg/Opus at 48 kHz regardless of
+      //    what the input rate is. Mismatching here causes Web Audio to
+      //    auto-resample, which plays everything at half speed and was
+      //    the cause of "audio sounds slow" reports.
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      const ctx = new Ctx({ sampleRate: encoderSampleRate });
+      const ctx = new Ctx({ sampleRate: PLAYBACK_SAMPLE_RATE });
       // Autoplay rules: resume immediately on user gesture
       if (ctx.state === "suspended") {
         await ctx.resume();
@@ -281,6 +300,20 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           }
           const ch0 = channelData[0];
 
+          // Cap latency: if the playback head is already too far ahead of
+          // wall clock, the queue is full (moshi probably burst-sent a few
+          // frames after a stall). Drop this frame so already-queued
+          // buffers play out and nextStartRef catches back up to now.
+          // Trade-off: a dropped frame = ~80ms of audio lost (one syllable
+          // gap), but latency self-corrects in <1 second vs growing
+          // unbounded over the call.
+          const now = ctx.currentTime;
+          if (nextStartRef.current > now + MAX_PLAYBACK_LEAD_SEC) {
+            decodeStatsRef.current.framesDroppedForLag += 1;
+            decodeStatsRef.current.decodesOk += 1;
+            return;
+          }
+
           const buf = ctx.createBuffer(1, ch0.length, sampleRate);
           buf.getChannelData(0).set(ch0);
 
@@ -288,10 +321,9 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           src.buffer = buf;
           src.connect(ctx.destination);
 
-          // Schedule at the next free slot. If we've fallen behind real
-          // time (network stall or first frame after a long gap), jump
-          // forward to "now + lead" so we don't accumulate latency.
-          const now = ctx.currentTime;
+          // Schedule at the next free slot. If we've fallen BEHIND real
+          // time (network stall), jump forward to "now + 5ms" so we
+          // don't try to schedule in the past.
           const startAt = Math.max(nextStartRef.current, now + 0.005);
           src.start(startAt);
           nextStartRef.current = startAt + buf.duration;
