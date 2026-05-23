@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useJingle } from "@/lib/useJingle";
 import { useMoshiAudio } from "@/lib/useMoshiAudio";
 import { useMoshiSession, type MoshiConnectionState } from "@/lib/useMoshiSession";
 import {
@@ -118,19 +119,22 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.state]);
 
+  const jingle = useJingle();
   const onCall = useCallback(() => {
     if (session.state === "idle" || session.state === "closed" || session.state === "error") {
       // Clear the backstage UI before opening the new WS so any leftover
       // items / transcript from the previous call disappear immediately.
-      // The sidecar will also emit call_started shortly which replaces
-      // state with a fresh CallState — this just avoids the visible flash.
       onResetBackstage?.();
+      // Brief synthesized chime — gives the caller audible feedback that
+      // the call is connecting while moshi loads (~1-3s gap before Vox
+      // greets). Plays once and fades out before Vox's voice arrives.
+      jingle.play();
       session.start();
     } else {
       audio.stop();
       session.stop();
     }
-  }, [session, audio, onResetBackstage]);
+  }, [session, audio, onResetBackstage, jingle]);
 
   const sessionLabel = labelForSession(session.state);
 
