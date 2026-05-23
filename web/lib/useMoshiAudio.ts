@@ -43,6 +43,13 @@ export interface MoshiAudioOptions {
 export interface MoshiAudio {
   state: AudioState;
   lastError: string | null;
+  /** Decode-path counters for diagnostics — surfaced in the debug panel. */
+  decodeStats: {
+    pagesIn: number;
+    decodesOk: number;
+    decodesFailed: number;
+    samplesPlayed: number;
+  };
   /** Open mic + warm decoder. After this, call `pushOggPage` with frames from the server. */
   start: () => Promise<void>;
   /** Stop mic + drain playback queue. Safe to call multiple times. */
@@ -81,6 +88,12 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
 
   const [state, setState] = useState<AudioState>("idle");
   const [lastError, setLastError] = useState<string | null>(null);
+  const [decodeStats, setDecodeStats] = useState({
+    pagesIn: 0,
+    decodesOk: 0,
+    decodesFailed: 0,
+    samplesPlayed: 0,
+  });
 
   // Resources to clean up on stop()
   // (mic stream is owned by opus-recorder — calling recorder.stop()
@@ -194,16 +207,24 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     (page: Uint8Array) => {
       const decoder = decoderRef.current;
       const ctx = audioCtxRef.current;
-      if (!decoder || !ctx) return;
+      if (!decoder || !ctx) {
+        // eslint-disable-next-line no-console
+        console.warn("[moshi-audio] page received before decoder ready, dropping", page.length);
+        return;
+      }
+
+      setDecodeStats((s) => ({ ...s, pagesIn: s.pagesIn + 1 }));
 
       decoder
         .decode(page)
         .then(({ channelData, samplesDecoded, sampleRate }) => {
-          if (samplesDecoded === 0 || channelData.length === 0) return;
+          if (samplesDecoded === 0 || channelData.length === 0 || !channelData[0]?.length) {
+            // OpusHead / OpusTags header pages have no audio — counts as ok decode
+            setDecodeStats((s) => ({ ...s, decodesOk: s.decodesOk + 1 }));
+            return;
+          }
           const ch0 = channelData[0];
-          if (!ch0 || ch0.length === 0) return;
 
-          // Build an AudioBuffer with the decoded samples and schedule it
           const buf = ctx.createBuffer(1, ch0.length, sampleRate);
           buf.getChannelData(0).set(ch0);
 
@@ -212,17 +233,34 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
           src.connect(ctx.destination);
 
           // Schedule at the next free slot. If we've fallen behind real
-          // time (network stall), jump forward to "now + lead" so we
-          // don't accumulate latency.
+          // time (network stall or first frame after a long gap), jump
+          // forward to "now + lead" so we don't accumulate latency.
           const now = ctx.currentTime;
           const startAt = Math.max(nextStartRef.current, now + 0.005);
           src.start(startAt);
           nextStartRef.current = startAt + buf.duration;
+
+          setDecodeStats((s) => ({
+            ...s,
+            decodesOk: s.decodesOk + 1,
+            samplesPlayed: s.samplesPlayed + samplesDecoded,
+          }));
         })
-        .catch(() => {
-          // Decode failures happen on partial pages — ignore silently.
+        .catch((err) => {
+          setDecodeStats((s) => ({ ...s, decodesFailed: s.decodesFailed + 1 }));
+          // Log first 3 failures to avoid console spam
+          if (decodeStats.decodesFailed < 3) {
+            // eslint-disable-next-line no-console
+            console.warn("[moshi-audio] decode failed", {
+              pageLen: page.length,
+              firstBytes: Array.from(page.slice(0, 8)).map((b) => b.toString(16).padStart(2, "0")).join(" "),
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
         });
     },
+    // decodeStats.decodesFailed is only used for log gating — safe to omit from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -235,5 +273,5 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     };
   }, []);
 
-  return { state, lastError, start, stop, pushOggPage };
+  return { state, lastError, decodeStats, start, stop, pushOggPage };
 }

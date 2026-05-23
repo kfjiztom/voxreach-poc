@@ -224,6 +224,14 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
             <div className="text-ink">{audioFramesRx}</div>
             <div>Audio frames TX (us→server):</div>
             <div className="text-ink">{audioFramesTx}</div>
+            <div>Decoder pages in:</div>
+            <div className="text-ink">{audio.decodeStats.pagesIn}</div>
+            <div>Decoder ok:</div>
+            <div className="text-ink">{audio.decodeStats.decodesOk}</div>
+            <div>Decoder failed:</div>
+            <div className={audio.decodeStats.decodesFailed > 0 ? "text-persimmon" : "text-ink"}>{audio.decodeStats.decodesFailed}</div>
+            <div>Samples played:</div>
+            <div className="text-ink">{audio.decodeStats.samplesPlayed.toLocaleString()}</div>
             <div>Vox text chars:</div>
             <div className="text-ink">{voxText.length}</div>
             <div>Backstage call ID:</div>
