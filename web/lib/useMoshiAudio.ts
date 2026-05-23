@@ -119,6 +119,12 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
 
   // Playback scheduling — keeps audio gapless
   const nextStartRef = useRef<number>(0);
+
+  // Pages that arrive before the decoder is initialized (race with start()):
+  // moshi sends the OpusHead + OpusTags pages right after handshake, but our
+  // async setup hasn't finished yet. We buffer them and flush in-order once
+  // ready — WITHOUT the OpusHead the decoder can't produce ANY samples.
+  const pendingPagesRef = useRef<Uint8Array[]>([]);
   // Stable ref to the callback so identity changes don't churn recorder
   const onCaptureRef = useRef(onCapturePage);
   onCaptureRef.current = onCapturePage;
@@ -192,6 +198,19 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
       nextStartRef.current = ctx.currentTime + playbackLeadSeconds;
 
       await recorder.start();
+
+      // Flush any pages that arrived during the async setup. Order matters —
+      // the OpusHead must reach the decoder before audio pages.
+      if (pendingPagesRef.current.length > 0) {
+        // eslint-disable-next-line no-console
+        console.log("[moshi-audio] flushing", pendingPagesRef.current.length, "buffered pages to decoder");
+        const buffered = pendingPagesRef.current;
+        pendingPagesRef.current = [];
+        for (const p of buffered) {
+          decodeAndPlay(p, decoder as unknown as OggOpusDecoder, ctx);
+        }
+      }
+
       setState("running");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -215,24 +234,46 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     decoderRef.current = null;
     audioCtxRef.current = null;
     nextStartRef.current = 0;
+    pendingPagesRef.current = [];
+    logFailuresLeftRef.current = 3;
     setState("idle");
   }, []);
 
-  const pushOggPage = useCallback(
-    (page: Uint8Array) => {
-      const decoder = decoderRef.current;
-      const ctx = audioCtxRef.current;
-      if (!decoder || !ctx) {
-        // eslint-disable-next-line no-console
-        console.warn("[moshi-audio] page received before decoder ready, dropping", page.length);
-        return;
-      }
+  // Shared decode-and-play logic used by both pushOggPage (live frames)
+  // and the start()-side flush of buffered pages. Decoder + ctx are passed
+  // explicitly so the start-time flush works before refs are stable for
+  // the lazy callbacks above.
+  function decodeAndPlay(page: Uint8Array, decoder: OggOpusDecoder, ctx: AudioContext) {
+    decodeStatsRef.current.pagesIn += 1;
 
-      decodeStatsRef.current.pagesIn += 1;
+      // Log first 5 pages' first bytes so we can see what moshi is sending.
+      // OggS magic = 0x4F 0x67 0x67 0x53. If we see something else, the
+      // stream isn't Ogg-wrapped and we need a different decoder.
+      if (decodeStatsRef.current.pagesIn <= 5) {
+        // eslint-disable-next-line no-console
+        console.log("[moshi-audio] page", decodeStatsRef.current.pagesIn, {
+          len: page.length,
+          firstBytes: Array.from(page.slice(0, 16))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join(" "),
+          ascii: Array.from(page.slice(0, 4))
+            .map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : "."))
+            .join(""),
+        });
+      }
 
       decoder
         .decode(page)
         .then(({ channelData, samplesDecoded, sampleRate }) => {
+          if (decodeStatsRef.current.pagesIn <= 5) {
+            // eslint-disable-next-line no-console
+            console.log("[moshi-audio] decode result", decodeStatsRef.current.pagesIn, {
+              samplesDecoded,
+              sampleRate,
+              channelCount: channelData.length,
+              ch0Length: channelData[0]?.length ?? 0,
+            });
+          }
           if (samplesDecoded === 0 || channelData.length === 0 || !channelData[0]?.length) {
             // OpusHead / OpusTags header pages have no audio — counts as ok decode
             decodeStatsRef.current.decodesOk += 1;
@@ -270,9 +311,21 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
             });
           }
         });
-    },
-    [],
-  );
+  }
+
+  const pushOggPage = useCallback((page: Uint8Array) => {
+    const decoder = decoderRef.current;
+    const ctx = audioCtxRef.current;
+    if (!decoder || !ctx) {
+      // Race: page arrived before decoder finished initializing. Buffer it —
+      // the start() async flow will flush this list once it's ready.
+      // The OpusHead must be preserved or NO subsequent audio will decode.
+      pendingPagesRef.current.push(page);
+      return;
+    }
+    decodeAndPlay(page, decoder, ctx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Unmount cleanup
   useEffect(() => {
