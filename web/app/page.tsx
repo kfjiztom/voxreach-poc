@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { BackstagePane } from "@/components/BackstagePane";
 import { CallPane } from "@/components/CallPane";
 import { Header } from "@/components/Header";
@@ -22,39 +24,54 @@ const MOSHI_PORT = process.env.NEXT_PUBLIC_MOSHI_PORT?.trim() ?? "8998";
 const PERSONAPLEX_URL = process.env.NEXT_PUBLIC_PERSONAPLEX_URL?.trim();
 
 /** Build the moshi WebSocket URL.
- *  If NEXT_PUBLIC_MOSHI_WS_URL is set, use it verbatim — same build works for
- *  whatever environment you bake in.
- *  Otherwise derive from window.location: same host, ws/wss matching the
- *  page's scheme, port = NEXT_PUBLIC_MOSHI_PORT (default 8998). This lets
- *  ONE production build work for local dev AND Thunder/Lambda HTTPS proxy
- *  without env-var-at-build-time pitfalls.
  *
- *  Returns undefined during SSR (no window). Caller treats undefined as
- *  "no native pane configured" and falls back to iframe or mock pane.
+ *  Default = same-origin proxy at /api/moshi-ws (handled by our custom
+ *  Next.js server). This works through any HTTPS reverse proxy (Thunder,
+ *  RunPod, Cloudflare) without needing the proxy to route additional
+ *  ports — the browser only ever sees the same host/port the page was
+ *  loaded from.
+ *
+ *  Overrides (in priority order):
+ *   1. NEXT_PUBLIC_MOSHI_WS_URL — verbatim, full ws://... URL
+ *   2. NEXT_PUBLIC_MOSHI_PORT — if set, bypass the proxy and connect
+ *      directly to that port on the same host (only useful for local
+ *      dev where the moshi port is reachable without proxying)
+ *
+ *  Returns undefined during SSR (no window) — page.tsx defers calling
+ *  this until useEffect to avoid hydration mismatch.
  */
 function resolveMoshiWsUrl(): string | undefined {
   if (MOSHI_WS_URL_BUILD_TIME) return MOSHI_WS_URL_BUILD_TIME;
   if (typeof window === "undefined") return undefined;
-  // Same-host derivation. Thunder pattern: https://<id>-3001.thundercompute.net
-  // → wss://<id>-3001.thundercompute.net  (but on port 8998).
-  // For Thunder/Lambda the hostname encodes the port (<id>-<port>) so we
-  // need to swap the port-in-hostname too. Pattern: <prefix>-<port>.<rest>
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
-  const portSwapped = host.replace(/-\d+(\.)/, `-${MOSHI_PORT}$1`);
-  // If the regex didn't match, the host has no -PORT- segment (plain
-  // localhost or a bare domain). Use the port from MOSHI_PORT directly.
-  const finalHost = portSwapped !== host ? portSwapped : `${host.split(":")[0]}:${MOSHI_PORT}`;
-  return `${proto}//${finalHost}/api/chat`;
+
+  // If NEXT_PUBLIC_MOSHI_PORT is set explicitly, use direct-port mode
+  // (legacy / local dev). Strip any existing :port from the host and
+  // append the requested one.
+  if (process.env.NEXT_PUBLIC_MOSHI_PORT) {
+    const portSwapped = host.replace(/-\d+(\.)/, `-${MOSHI_PORT}$1`);
+    const finalHost = portSwapped !== host ? portSwapped : `${host.split(":")[0]}:${MOSHI_PORT}`;
+    return `${proto}//${finalHost}/api/chat`;
+  }
+
+  // Default — same-origin proxy through our custom Next.js server.
+  return `${proto}//${host}/api/moshi-ws`;
 }
 
 export default function HomePage() {
   const { state, dispatch, sseStatus, sseEventCount } = useCallState();
   const resetBackstage = () => dispatch({ type: "reset" });
 
-  // Resolved at render time so window.location is available — same build
-  // produces the right URL for local dev and Thunder HTTPS proxy alike.
-  const moshiWsUrl = resolveMoshiWsUrl();
+  // Resolved AFTER mount via useEffect so SSR and the first client render
+  // produce identical markup (avoids React hydration mismatch #418 —
+  // resolveMoshiWsUrl reads window.location which doesn't exist during SSR).
+  // Until the URL is set, the page renders in mock/fallback mode briefly
+  // then swaps to NativeCallPane on the next render.
+  const [moshiWsUrl, setMoshiWsUrl] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    setMoshiWsUrl(resolveMoshiWsUrl());
+  }, []);
 
   let leftPane: React.ReactNode;
   if (moshiWsUrl) {

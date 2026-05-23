@@ -158,19 +158,39 @@ export function useMoshiSession(options: MoshiSessionOptions): MoshiSession {
     };
 
     ws.onerror = () => {
-      setLastError("websocket error (see browser network tab)");
+      // Browsers deliberately hide WS error details for security, so the
+      // most useful thing we can do is point the user at where to look
+      // next. The onclose event that fires right after often has the
+      // actual close code which is more informative.
+      setLastError(`WebSocket failed to connect to ${url.split("?")[0]}`);
       setState("error");
       cbRef.current.onError?.(new Error("websocket error"));
     };
 
     ws.onclose = (ev) => {
       wsRef.current = null;
-      setState("closed");
+      // Distinguish failure modes — WS close codes are surprisingly
+      // informative once you read them:
+      //   1006: abnormal closure — usually network reachability or TLS
+      //         issue. On HTTPS pages with WSS this is the most common
+      //         symptom of a reverse proxy that doesn't speak websocket.
+      //   1011: server error
+      //   1008/1003: policy violation / unsupported data
+      const codeNotes: Record<number, string> = {
+        1000: "normal close",
+        1001: "going away",
+        1006: "ABNORMAL — connection never opened cleanly (reverse proxy may not support WSS for this port?)",
+        1008: "policy violation",
+        1011: "server error",
+        1015: "TLS handshake failure",
+      };
+      const note = codeNotes[ev.code] ?? "unknown";
       if (!ev.wasClean && ev.code !== 1000) {
-        const msg = `closed unexpectedly (code ${ev.code} ${ev.reason || "no reason"})`;
+        const msg = `closed code ${ev.code} (${note})${ev.reason ? ": " + ev.reason : ""}`;
         setLastError(msg);
         cbRef.current.onError?.(new Error(msg));
       }
+      setState("closed");
     };
   }, [wsUrl, textPrompt, voicePrompt]);
 

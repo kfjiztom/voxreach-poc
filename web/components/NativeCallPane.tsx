@@ -239,13 +239,22 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
         </div>
       ) : (
         // Idle / pre-call — single tight card with the call button prominent
-        <div className="mb-3 rounded-2xl border border-clay/60 bg-white px-4 py-3 shadow-sm">
+        <div className={`mb-3 rounded-2xl border bg-white px-4 py-3 shadow-sm ${
+          session.state === "error" || micError ? "border-persimmon" : "border-clay/60"
+        }`}>
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[10px] uppercase tracking-widest text-ink/40">
-                {session.state === "error" ? "Last call ended in error" : session.state === "closed" ? "Call ended" : "Ready"}
+              <div className={`text-[10px] uppercase tracking-widest ${
+                session.state === "error" || micError ? "text-persimmon font-semibold" : "text-ink/40"
+              }`}>
+                {micError ? "Mic error" :
+                 session.state === "error" ? "Last call ended in error" :
+                 session.state === "closed" ? "Call ended" :
+                 "Ready"}
               </div>
-              <div className="text-sm text-ink/80 leading-tight">
+              <div className={`text-sm leading-tight ${
+                session.state === "error" || micError ? "text-persimmonDark" : "text-ink/80"
+              }`}>
                 {micError
                   ? micError
                   : session.state === "error" && session.lastError
