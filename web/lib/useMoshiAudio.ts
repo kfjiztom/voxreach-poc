@@ -109,7 +109,7 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     try {
       // 1. Decoder for incoming audio (warm BEFORE mic, so first frames
       //    don't queue up undecoded).
-      const decoderMod = await import("@wasm-audio-decoders/ogg-opus");
+      const decoderMod = await import("ogg-opus-decoder");
       const decoder = new decoderMod.OggOpusDecoderWebWorker();
       await decoder.ready;
       decoderRef.current = decoder as unknown as OggOpusDecoder;

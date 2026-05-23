@@ -12,8 +12,8 @@
     "postinstall": "node scripts/copy-audio-workers.mjs"
   },
   "dependencies": {
-    "@wasm-audio-decoders/ogg-opus": "^0.1.16",
     "next": "^15.1.0",
+    "ogg-opus-decoder": "^0.1.16",
     "opus-recorder": "^8.0.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

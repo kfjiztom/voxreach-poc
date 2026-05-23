@@ -30,7 +30,7 @@ declare module "opus-recorder" {
   }
 }
 
-declare module "@wasm-audio-decoders/ogg-opus" {
+declare module "ogg-opus-decoder" {
   export class OggOpusDecoderWebWorker {
     constructor();
     ready: Promise<void>;
