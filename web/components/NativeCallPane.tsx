@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useMoshiAudio } from "@/lib/useMoshiAudio";
 import { useMoshiSession, type MoshiConnectionState } from "@/lib/useMoshiSession";
 import type { CallState } from "@/lib/types";
 
@@ -34,28 +35,65 @@ interface NativeCallPaneProps {
 export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
   const [voxText, setVoxText] = useState<string>("");
   const [showDebug, setShowDebug] = useState(false);
-  const audioFramesRef = useRef(0);
+  const [audioFramesRx, setAudioFramesRx] = useState(0);
+  const [audioFramesTx, setAudioFramesTx] = useState(0);
+
+  // Audio hook handles mic capture + opus encoding/decoding + playback.
+  // sessionRef gives the audio hook access to the WS sender without
+  // re-creating the recorder when the session object identity changes.
+  const sessionRef = useRef<{ sendAudioFrame: (p: Uint8Array) => void } | null>(null);
+
+  const audio = useMoshiAudio({
+    onCapturePage: (page) => {
+      sessionRef.current?.sendAudioFrame(page);
+      setAudioFramesTx((n) => n + 1);
+    },
+  });
 
   const session = useMoshiSession({
     wsUrl: moshiWsUrl,
     onText: (token) => setVoxText((prev) => prev + token),
-    onAudio: () => {
-      audioFramesRef.current += 1;
+    onAudio: (oggPage) => {
+      setAudioFramesRx((n) => n + 1);
+      audio.pushOggPage(oggPage);
     },
     onHandshake: () => {
-      // Reset transcript on each fresh session
       setVoxText("");
-      audioFramesRef.current = 0;
+      setAudioFramesRx(0);
+      setAudioFramesTx(0);
+      // Mic capture starts AFTER handshake — moshi is ready to receive
+      // and we don't want to waste mic frames during connection setup.
+      void audio.start();
+    },
+    onError: () => {
+      audio.stop();
     },
   });
+
+  // Keep sessionRef in sync so the capture callback can send frames
+  sessionRef.current = { sendAudioFrame: session.sendAudioFrame };
+
+  // Stop audio whenever the WS leaves the active states
+  useEffect(() => {
+    if (
+      session.state === "closed" ||
+      session.state === "error" ||
+      session.state === "idle"
+    ) {
+      audio.stop();
+    }
+    // We intentionally only react to session.state changes here
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.state]);
 
   const onCall = useCallback(() => {
     if (session.state === "idle" || session.state === "closed" || session.state === "error") {
       session.start();
     } else {
+      audio.stop();
       session.stop();
     }
-  }, [session]);
+  }, [session, audio]);
 
   // Reflect WS state in the same status-pill UI the rest of the app uses.
   const sessionLabel = labelForSession(session.state);
@@ -117,6 +155,8 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
               <div className="mb-6 max-w-md text-sm text-ink/60">
                 {session.state === "error" && session.lastError
                   ? `Last attempt failed: ${session.lastError}`
+                  : audio.state === "error" && audio.lastError
+                  ? `Mic / audio setup failed: ${audio.lastError}`
                   : "Click below to start the call. Grant microphone access when prompted."}
               </div>
               <button
@@ -176,31 +216,32 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
           <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-ink/60">
             <div>WS state:</div>
             <div className="text-ink">{session.state}</div>
+            <div>Audio state:</div>
+            <div className="text-ink">{audio.state}</div>
             <div>WS URL:</div>
             <div className="truncate text-ink" title={moshiWsUrl}>{moshiWsUrl}</div>
-            <div>Audio frames RX:</div>
-            <div className="text-ink">{audioFramesRef.current}</div>
+            <div>Audio frames RX (server→us):</div>
+            <div className="text-ink">{audioFramesRx}</div>
+            <div>Audio frames TX (us→server):</div>
+            <div className="text-ink">{audioFramesTx}</div>
             <div>Vox text chars:</div>
             <div className="text-ink">{voxText.length}</div>
             <div>Backstage call ID:</div>
             <div className="truncate text-ink" title={state.call_id}>{state.call_id || "—"}</div>
             {session.lastError && (
               <>
-                <div>Last error:</div>
+                <div>WS error:</div>
                 <div className="text-persimmon">{session.lastError}</div>
+              </>
+            )}
+            {audio.lastError && (
+              <>
+                <div>Audio error:</div>
+                <div className="text-persimmon">{audio.lastError}</div>
               </>
             )}
           </div>
         )}
-
-        {/* Phase 1B placeholder — Hide this once mic + playback are wired */}
-        <div className="mt-3 rounded-lg border border-persimmon/30 bg-persimmon/5 p-3 text-[11px] text-persimmonDark">
-          <strong>Phase 1 preview:</strong> this pane shows Vox's text stream from the
-          WebSocket. Mic capture and audio playback land in Phase 1B (opus codec
-          via WebAssembly). Until then, use the iframe pane for actual voice calls —
-          set <code className="rounded bg-white/60 px-1">NEXT_PUBLIC_PERSONAPLEX_URL</code> instead of
-          <code className="rounded bg-white/60 px-1">NEXT_PUBLIC_MOSHI_WS_URL</code>.
-        </div>
       </div>
 
       {/* Hidden — preserve the old CallControls integration so the backstage flow keeps working */}

@@ -8,10 +8,13 @@
     "build": "next build",
     "start": "next start -p 3001",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/copy-audio-workers.mjs"
   },
   "dependencies": {
+    "@wasm-audio-decoders/ogg-opus": "^0.1.16",
     "next": "^15.1.0",
+    "opus-recorder": "^8.0.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
