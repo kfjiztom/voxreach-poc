@@ -49,14 +49,33 @@ def _load_menu_index() -> dict[str, dict[str, Any]]:
             price = _resolve_price_cents(dish)
             entry = {"name": name, "unit_price_cents": price, "raw": dish}
             index[name.lower()] = entry
-            # Stripped parenthetical alias
+            # Stripped parenthetical alias — "Insam (Ginseng) Tea" → "insam tea"
             simple = re.sub(r"\(.+?\)", "", name).strip().lower()
+            simple = re.sub(r"\s+", " ", simple)  # collapse double spaces from the strip
             if simple and simple != name.lower():
                 index[simple] = entry
-            # First-word alias (bulgogi, japchae, mandu, etc.) — for partial matches
+            # First-word alias — "Bulgogi", "Japchae", "Mandu", "Bibimbap"
             first = name.split()[0].lower()
             if len(first) >= 4 and first not in {"kimchi"}:
                 index.setdefault(first, entry)
+            # Parenthetical-content alias — for items where the customer-facing
+            # word lives INSIDE the parenthetical:
+            #   "Insam (Ginseng) Tea"  → caller says "ginseng tea" not "insam"
+            #   "Mandu (Beef & Chive)" → caller says "beef" or "chive"
+            #   "Bibimbap (Stone Bowl)" → caller might say "stone bowl"
+            # Pull each word inside the parens; if there's a noun after the
+            # paren (like "Tea"), also register the "<paren-word> <suffix>"
+            # form so "ginseng tea" lookups land directly on this entry.
+            paren_match = re.search(r"\((.+?)\)", name)
+            if paren_match:
+                paren_text = paren_match.group(1).strip().lower()
+                paren_words = [w for w in re.split(r"[\s&]+", paren_text) if len(w) >= 4]
+                suffix_match = re.search(r"\)\s*(.+)$", name)
+                suffix = suffix_match.group(1).strip().lower() if suffix_match else ""
+                for word in paren_words:
+                    index.setdefault(word, entry)
+                    if suffix:
+                        index.setdefault(f"{word} {suffix}", entry)
     return index
 
 
