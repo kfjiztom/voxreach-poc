@@ -120,21 +120,51 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
   }, [session.state]);
 
   const jingle = useJingle();
-  const onCall = useCallback(() => {
+  const [micError, setMicError] = useState<string | null>(null);
+
+  /** Pre-flight mic permission in the SAME tick as the click handler.
+   *  iOS Safari rejects getUserMedia() if called from an async callback
+   *  fired after the user gesture has ended — which is exactly what our
+   *  audio.start() (triggered by the WS handshake ~500ms-3s later) does.
+   *  Acquiring the stream upfront and immediately releasing it grants
+   *  the permission for the origin so opus-recorder's later getUserMedia
+   *  call succeeds without re-prompting. */
+  const requestMicPermission = useCallback(async (): Promise<boolean> => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setMicError("This browser doesn't support microphone access");
+      return false;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Don't keep this stream — opus-recorder asks for its own. We just
+      // needed the permission grant.
+      stream.getTracks().forEach((t) => t.stop());
+      setMicError(null);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMicError(`Microphone: ${msg}`);
+      return false;
+    }
+  }, []);
+
+  const onCall = useCallback(async () => {
     if (session.state === "idle" || session.state === "closed" || session.state === "error") {
-      // Clear the backstage UI before opening the new WS so any leftover
-      // items / transcript from the previous call disappear immediately.
-      onResetBackstage?.();
-      // Brief synthesized chime — gives the caller audible feedback that
-      // the call is connecting while moshi loads (~1-3s gap before Vox
-      // greets). Plays once and fades out before Vox's voice arrives.
+      // Order matters here for iOS Safari compatibility:
+      //  1. jingle (creates AudioContext under user gesture — must be sync)
+      //  2. mic permission (must be acquired during the gesture, not async-later)
+      //  3. backstage reset (cheap, before WS opens)
+      //  4. session.start (opens WS — after this we can't request mic anymore)
       jingle.play();
+      const micOk = await requestMicPermission();
+      if (!micOk) return;  // surfaced in idle card; don't open WS without mic
+      onResetBackstage?.();
       session.start();
     } else {
       audio.stop();
       session.stop();
     }
-  }, [session, audio, onResetBackstage, jingle]);
+  }, [session, audio, onResetBackstage, jingle, requestMicPermission]);
 
   const sessionLabel = labelForSession(session.state);
 
@@ -216,7 +246,9 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
                 {session.state === "error" ? "Last call ended in error" : session.state === "closed" ? "Call ended" : "Ready"}
               </div>
               <div className="text-sm text-ink/80 leading-tight">
-                {session.state === "error" && session.lastError
+                {micError
+                  ? micError
+                  : session.state === "error" && session.lastError
                   ? session.lastError
                   : audio.state === "error" && audio.lastError
                   ? `Mic / audio: ${audio.lastError}`
