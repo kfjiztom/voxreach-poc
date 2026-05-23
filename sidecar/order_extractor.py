@@ -36,6 +36,43 @@ KNOWLEDGE_PATH = Path(__file__).resolve().parent.parent / "knowledge" / "hearth_
 # ---------------------------------------------------------------------------
 
 
+# Hand-curated colloquial aliases that the auto-derivation can't infer
+# safely. Each maps a customer-facing phrase to the canonical menu name.
+# Keys must be lowercase. Use this for cases like "green tea" (which dish?)
+# or "the beef" (Bulgogi vs Mandu — Bulgogi is the natural read).
+_MANUAL_ALIASES: dict[str, str] = {
+    # Tea colloquialisms — caller rarely says the Korean name
+    "green tea": "Sejak Green Tea",
+    "honey tea": "Yuja Honey Tea",
+    "yuja tea": "Yuja Honey Tea",
+    "barley tea": "Boricha",
+    # Beef disambiguation — Bulgogi is the prototypical beef dish on this menu;
+    # without this override, "beef" auto-derives to Mandu (Beef & Chive)
+    "beef": "Bulgogi",
+    "ribeye": "Bulgogi",
+    "rib eye": "Bulgogi",
+    "rib-eye": "Bulgogi",
+    "bbq beef": "Bulgogi",
+    # Dumplings — easier name than Mandu for non-Korean speakers
+    "dumplings": "Mandu (Beef & Chive)",
+    "dumpling": "Mandu (Beef & Chive)",
+    # Korean pancake
+    "pancake": "Haemul Pajeon",
+    "seafood pancake": "Haemul Pajeon",
+    "scallion pancake": "Haemul Pajeon",
+    # Hotteok
+    "korean pancake": "Pine-Nut Hotteok",
+    "sweet pancake": "Pine-Nut Hotteok",
+    # Short rib
+    "short rib": "Galbi-jjim",
+    "short ribs": "Galbi-jjim",
+    "galbi": "Galbi-jjim",
+    # Stew
+    "kimchi stew": "Kimchi Jjigae",
+    "pork stew": "Kimchi Jjigae",
+}
+
+
 def _load_menu_index() -> dict[str, dict[str, Any]]:
     """Build a flat lookup of menu items keyed by lowercase name + aliases.
 
@@ -43,11 +80,14 @@ def _load_menu_index() -> dict[str, dict[str, Any]]:
     """
     raw = json.loads(KNOWLEDGE_PATH.read_text())
     index: dict[str, dict[str, Any]] = {}
+    # First pass: build entries by canonical name
+    canonical_entries: dict[str, dict[str, Any]] = {}
     for section in raw["menu"].values():
         for dish in section:
             name = dish["name"]
             price = _resolve_price_cents(dish)
             entry = {"name": name, "unit_price_cents": price, "raw": dish}
+            canonical_entries[name] = entry
             index[name.lower()] = entry
             # Stripped parenthetical alias — "Insam (Ginseng) Tea" → "insam tea"
             simple = re.sub(r"\(.+?\)", "", name).strip().lower()
@@ -76,6 +116,17 @@ def _load_menu_index() -> dict[str, dict[str, Any]]:
                     index.setdefault(word, entry)
                     if suffix:
                         index.setdefault(f"{word} {suffix}", entry)
+
+    # Second pass: apply hand-curated aliases. These OVERRIDE auto-derived
+    # values (no setdefault) so e.g. "beef" → Bulgogi instead of Mandu,
+    # which the first-pass would've left pointing at Mandu via the
+    # parenthetical-content rule.
+    for alias, canonical in _MANUAL_ALIASES.items():
+        entry = canonical_entries.get(canonical)
+        if entry is None:
+            log.warning("manual alias %r → %r: canonical not found in menu, skipping", alias, canonical)
+            continue
+        index[alias] = entry
     return index
 
 
@@ -614,6 +665,47 @@ def _customer_text_concat(transcript: list[TranscriptTurn]) -> str:
     return " ".join(t.text for t in transcript if t.role == "customer").lower()
 
 
+# Phrases that flip a turn from "order context" to "question context".
+# If a customer turn starts with one of these (or ends with "?"), mentions
+# of menu items in that turn don't count as orders.
+_QUESTION_OPENERS = (
+    "do you", "does the", "what's", "what is", "what's in", "what are",
+    "what kind", "is the", "is it", "can you tell", "can you describe",
+    "how much", "how many", "how spicy", "how big", "tell me about",
+    "what comes with", "what sides", "any", "any chance",
+)
+
+
+def _is_question_turn(text: str) -> bool:
+    """Heuristic: does this customer line look like a question, not an order?
+
+    Used to filter out "Do you have bulgogi?" / "What's in the bibimbap?"
+    type turns that mention menu items but aren't actually ordering them.
+    Without this, the validator treats word presence as proof of intent.
+    """
+    t = text.strip().lower()
+    if not t:
+        return False
+    if t.endswith("?"):
+        return True
+    return any(t.startswith(opener) for opener in _QUESTION_OPENERS)
+
+
+def _order_context_text(transcript: list[TranscriptTurn]) -> str:
+    """Lowercase concatenation of customer turns that look like ORDERS,
+    not questions. Use this instead of _customer_text_concat for evidence-
+    based validation.
+    """
+    parts = []
+    for t in transcript:
+        if t.role != "customer":
+            continue
+        if _is_question_turn(t.text):
+            continue
+        parts.append(t.text)
+    return " ".join(parts).lower()
+
+
 def _item_mentioned_by_customer(item_name: str, customer_text: str) -> bool:
     """Did the customer ever utter a word referring to this item?
 
@@ -621,6 +713,8 @@ def _item_mentioned_by_customer(item_name: str, customer_text: str) -> bool:
       1. The full canonical name (lowercased) appears as a substring
       2. The first word of the canonical name appears (≥4 chars to skip "the")
       3. A known alias from MENU_INDEX maps to this item
+    Note: `customer_text` should typically be the QUESTION-FILTERED version
+    (`_order_context_text`) so question-context mentions don't count.
     """
     name_lc = item_name.lower()
     if name_lc in customer_text:
@@ -652,28 +746,28 @@ def validate_against_transcript(
     surfaced in the UI / logs so the operator knows what the LLM tried to add
     that we caught.
     """
-    customer_text = _customer_text_concat(transcript)
-    if not customer_text:
-        # No customer turns yet — nothing to validate against. Trust the
-        # extractor's empty/initial state.
+    # Question-filtered: "Do you have bulgogi?" does NOT count as ordering
+    # bulgogi. Only ordering-context customer turns provide evidence.
+    order_text = _order_context_text(transcript)
+    if not order_text:
+        # Either no customer turns yet, or all of them were questions —
+        # either way, trust the extractor's empty/initial state.
         return extraction, []
 
     kept = []
     warnings = []
     for item in extraction.items:
-        if _item_mentioned_by_customer(item.name, customer_text):
+        if _item_mentioned_by_customer(item.name, order_text):
             kept.append(item)
         else:
             warnings.append(
-                f"dropped {item.name!r} — no customer utterance mentions it "
-                f"(extractor hallucination)"
+                f"dropped {item.name!r} — no non-question customer utterance "
+                f"mentions it (extractor hallucination, or item was only asked about)"
             )
 
     if not warnings:
         return extraction, []
 
-    # Build a cleaned copy. We don't mutate the input in case the caller
-    # wants to inspect the raw extraction for debugging.
     cleaned = extraction.model_copy(update={"items": kept})
     return cleaned, warnings
 
@@ -689,15 +783,15 @@ def final_order_check(
     by name (empty if all pass). Caller decides whether to BLOCK the
     POS write or just FLAG for human review.
     """
-    customer_text = _customer_text_concat(transcript)
-    if not customer_text:
+    order_text = _order_context_text(transcript)
+    if not order_text:
         return [it.name for it in final_order_items if it.status != "removed"]
 
     suspect = []
     for item in final_order_items:
         if item.status == "removed":
             continue
-        if not _item_mentioned_by_customer(item.name, customer_text):
+        if not _item_mentioned_by_customer(item.name, order_text):
             suspect.append(item.name)
     return suspect
 
