@@ -177,7 +177,13 @@ export function useMoshiSession(options: MoshiSessionOptions): MoshiSession {
   const sendAudioFrame = useCallback((page: Uint8Array) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(page);
+    // moshi.server tags binary frames by kind: 0x00 handshake, 0x01 audio,
+    // 0x02 text. Without the prefix moshi logs "unknown message kind 79"
+    // (79 = 'O' from the OggS magic) and discards the audio.
+    const framed = new Uint8Array(page.length + 1);
+    framed[0] = 0x01;
+    framed.set(page, 1);
+    ws.send(framed);
   }, []);
 
   useEffect(() => {
