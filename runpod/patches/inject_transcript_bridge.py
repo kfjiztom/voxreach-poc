@@ -41,7 +41,8 @@ import sys
 from pathlib import Path
 
 MARKER_HELPERS = "# VoxReach transcript bridge helpers"
-MARKER_BUFFERED = "# VoxReach: buffered transcript v2"
+MARKER_BUFFERED_V2 = "# VoxReach: buffered transcript v2"
+MARKER_BUFFERED_V3 = "# VoxReach: buffered transcript v3 (worker pool, no per-token thread spawn)"
 MARKER_TRANSCRIPT = "# VoxReach: forward Vox's text"
 MARKER_START = "# VoxReach: notify call_start"
 MARKER_END = "# VoxReach: notify call_end"
@@ -58,23 +59,35 @@ ANCHOR_AFTER_IMPORTS = (
 HELPERS_BLOCK = '''
 
 # VoxReach transcript bridge helpers
-# VoxReach: buffered transcript v2
+# VoxReach: buffered transcript v3 (worker pool, no per-token thread spawn)
 import json as _vox_json
+import queue as _vox_queue
 import threading as _vox_threading
 import urllib.request as _vox_urllib_request
 
 
-def _voxreach_post(path, payload, timeout=1.0):
-    """Fire-and-forget POST to the VoxReach sidecar.
+# Single long-lived worker thread instead of spawning one per POST.
+# Thread creation costs ~1ms and grabs the GIL during start; at moshi's
+# ~12 Hz text-token rate this added measurable jitter to the audio loop
+# on cloud A100s (Thunder). A bounded queue + persistent worker eliminates
+# both costs while preserving fire-and-forget semantics.
+_vox_post_queue = _vox_queue.Queue(maxsize=256)
+_vox_post_worker_started = False
+_vox_post_worker_lock = _vox_threading.Lock()
 
-    Never blocks the audio path; failures are silently swallowed.
-    The sidecar URL is read at call time from VOXREACH_SIDECAR_URL
-    (default http://localhost:8001).
-    """
-    def _do():
+
+def _vox_post_worker():
+    """Drain _vox_post_queue, POST each payload, block on empty."""
+    while True:
+        item = _vox_post_queue.get()
+        if item is None:  # poison pill for clean shutdown
+            _vox_post_queue.task_done()
+            return
+        path, payload = item
         sidecar = os.environ.get("VOXREACH_SIDECAR_URL", "http://localhost:8001")
         if not sidecar:
-            return
+            _vox_post_queue.task_done()
+            continue
         try:
             data = _vox_json.dumps(payload).encode("utf-8")
             req = _vox_urllib_request.Request(
@@ -83,10 +96,44 @@ def _voxreach_post(path, payload, timeout=1.0):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            _vox_urllib_request.urlopen(req, timeout=timeout).read()
+            _vox_urllib_request.urlopen(req, timeout=2.0).read()
         except Exception:
+            pass  # swallow — fire-and-forget semantics
+        finally:
+            _vox_post_queue.task_done()
+
+
+def _voxreach_post(path, payload, timeout=1.0):
+    """Fire-and-forget POST to the VoxReach sidecar via the worker queue.
+
+    `timeout` is accepted for backward-compat with the v2 signature but
+    ignored — the worker uses a fixed 2s per-POST timeout. If the queue
+    fills up (sidecar dead/slow), the OLDEST pending request gets dropped
+    so we never block the audio loop.
+    """
+    global _vox_post_worker_started
+    if not _vox_post_worker_started:
+        with _vox_post_worker_lock:
+            if not _vox_post_worker_started:
+                _vox_threading.Thread(
+                    target=_vox_post_worker,
+                    daemon=True,
+                    name="voxreach-post-worker",
+                ).start()
+                _vox_post_worker_started = True
+    try:
+        _vox_post_queue.put_nowait((path, payload))
+    except _vox_queue.Full:
+        # Drop oldest then retry once; bounded so we don't OOM if sidecar wedges
+        try:
+            _vox_post_queue.get_nowait()
+            _vox_post_queue.task_done()
+        except _vox_queue.Empty:
             pass
-    _vox_threading.Thread(target=_do, daemon=True).start()
+        try:
+            _vox_post_queue.put_nowait((path, payload))
+        except _vox_queue.Full:
+            pass  # give up — better than blocking
 
 
 # Sentence-level buffering for Vox's text stream. Moshi emits one text
@@ -206,24 +253,26 @@ def patch(server_py: Path) -> dict:
     text = server_py.read_text()
     results: dict[str, str] = {}
 
-    # 1) Helpers block — if v1 is present (no MARKER_BUFFERED), upgrade in place
+    # 1) Helpers block — upgrade older versions in place.
+    #    v3 (current): worker pool, no per-token thread spawn
+    #    v2 (legacy):  per-POST Thread().start() — replaced
+    #    v1 (legacy):  no sentence-buffering — replaced
     if MARKER_HELPERS in text:
-        if MARKER_BUFFERED in text:
+        if MARKER_BUFFERED_V3 in text:
             results["helpers"] = "already"
         else:
-            # Locate and replace the entire v1 helpers block
+            # Detect previous version BEFORE we mutate `text`
+            prev_label = "v2" if MARKER_BUFFERED_V2 in text else "v1"
             start = text.find(MARKER_HELPERS)
             end_marker = "# end VoxReach transcript bridge helpers"
             end = text.find(end_marker, start)
             if start == -1 or end == -1:
-                # Couldn't find boundary — just append the new block
                 results["helpers"] = "error: legacy block found but boundary missing"
             else:
                 end_full = end + len(end_marker)
-                # Strip the new HELPERS_BLOCK's leading "\n\n" so we don't grow blank lines
                 replacement = HELPERS_BLOCK.lstrip("\n")
                 text = text[:start] + replacement.rstrip("\n") + text[end_full:]
-                results["helpers"] = "upgraded"
+                results["helpers"] = f"upgraded {prev_label}->v3"
     else:
         if ANCHOR_AFTER_IMPORTS not in text:
             raise ValueError(f"Could not find anchor for helpers: {ANCHOR_AFTER_IMPORTS!r}")
