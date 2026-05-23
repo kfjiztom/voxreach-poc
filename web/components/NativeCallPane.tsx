@@ -222,6 +222,9 @@ export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCa
                   ? `Mic / audio: ${audio.lastError}`
                   : "Click to call Vox. Grant microphone access when prompted."}
               </div>
+              <div className="mt-1 truncate font-mono text-[10px] text-ink/35" title={moshiWsUrl}>
+                → {moshiWsUrl}
+              </div>
             </div>
             <button
               type="button"

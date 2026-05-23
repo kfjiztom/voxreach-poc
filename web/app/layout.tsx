@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+
 export const metadata: Metadata = {
   title: "VoxReach · Hearth & Pass demo",
   description:
@@ -24,7 +26,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta httpEquiv="Pragma" content="no-cache" />
         <meta httpEquiv="Expires" content="0" />
       </head>
-      <body className="min-h-screen bg-cream text-ink">{children}</body>
+      <body className="min-h-screen bg-cream text-ink">
+        <ErrorBoundary>{children}</ErrorBoundary>
+      </body>
     </html>
   );
 }
