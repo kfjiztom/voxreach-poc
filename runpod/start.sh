@@ -130,8 +130,11 @@ echo "==> Starting tmux session '${SESSION}' with 3 windows."
 
 # Default persona prompt — auto-loaded when the client sends empty text_prompt.
 # Requires the server.py patch applied by setup.sh (see runpod/patches/).
-# Uses _short.txt by default (Option 1 — slim persona with fillers + escalation).
-DEFAULT_PROMPT_FILE="${DEFAULT_PROMPT_FILE:-${POC_DIR}/persona/vox_personaplex_prompt_short.txt}"
+# Uses _compact.txt (~247 tokens) by default — the _short.txt variant is
+# actually 869 tokens which exceeds moshi's working budget and causes the
+# LM to fail silently (handshake-then-close, no audio generation).
+# Override via DEFAULT_PROMPT_FILE env var if you want the larger persona.
+DEFAULT_PROMPT_FILE="${DEFAULT_PROMPT_FILE:-${POC_DIR}/persona/vox_personaplex_prompt_compact.txt}"
 
 # Window 1: PersonaPlex full-duplex speech server
 tmux new-session -d -s "${SESSION}" -n personaplex "

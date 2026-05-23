@@ -83,10 +83,11 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
   const [lastError, setLastError] = useState<string | null>(null);
 
   // Resources to clean up on stop()
+  // (mic stream is owned by opus-recorder — calling recorder.stop()
+  // releases it. We don't track it directly.)
   const recorderRef = useRef<OpusRecorder | null>(null);
   const decoderRef = useRef<OggOpusDecoder | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   // Playback scheduling — keeps audio gapless
   const nextStartRef = useRef<number>(0);
@@ -114,26 +115,11 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
       await decoder.ready;
       decoderRef.current = decoder as unknown as OggOpusDecoder;
 
-      // 2. Mic capture via getUserMedia
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          // ask for moshi's rate; browser may resample but better hint
-          sampleRate: encoderSampleRate,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      mediaStreamRef.current = stream;
-
-      // 3. opus-recorder for encoding mic → Ogg/Opus pages
-      //    We dynamically import via a string path so Next.js doesn't try
-      //    to inline this CommonJS module at build time.
+      // 2. opus-recorder handles mic capture itself via mediaTrackConstraints.
+      //    Passing a pre-acquired MediaStream isn't part of the v8 API —
+      //    attempting that causes `MessageChannel cannot clone MediaStream`
+      //    because the recorder tries to postMessage it to its worker.
       const recorderMod = await import("opus-recorder");
-      // opus-recorder is CJS in older releases — default export is the
-      // Recorder class. Cast via unknown to avoid TS struct-mismatch with
-      // our stub types in audio-deps.d.ts.
       const RecorderCtor = (recorderMod.default ??
         (recorderMod as unknown as { Recorder: unknown }).Recorder) as unknown as new (
         opts: Record<string, unknown>,
@@ -148,10 +134,13 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
         numberOfChannels: 1,
         maxFramesPerPage: 1,           // smallest pages = lowest latency
         resampleQuality: 3,
-        mediaTrackConstraints: false,  // we already have the stream
-        // opus-recorder >= 8 accepts an existing MediaStream via the
-        // `mediaStream` option (this avoids it re-requesting permission).
-        mediaStream: stream,
+        mediaTrackConstraints: {
+          channelCount: 1,
+          sampleRate: encoderSampleRate,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
 
       recorder.ondataavailable = (page: Uint8Array) => {
@@ -179,48 +168,27 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // Clean up any partials
-      try {
-        recorderRef.current?.stop();
-      } catch {/* */}
-      try {
-        decoderRef.current?.free();
-      } catch {/* */}
-      try {
-        audioCtxRef.current?.close();
-      } catch {/* */}
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      try { recorderRef.current?.stop(); } catch {/* */}
+      try { decoderRef.current?.free(); } catch {/* */}
+      try { audioCtxRef.current?.close(); } catch {/* */}
       recorderRef.current = null;
       decoderRef.current = null;
       audioCtxRef.current = null;
-      mediaStreamRef.current = null;
       setErr(msg);
     }
   }, [encoderSampleRate, playbackLeadSeconds, setErr, state]);
 
   const stop = useCallback(() => {
-    if (state !== "running" && state !== "starting") {
-      // Still clean up any leaked resources
-    }
     setState("stopping");
-    try {
-      recorderRef.current?.stop();
-    } catch {/* */}
-    try {
-      decoderRef.current?.free();
-    } catch {/* */}
-    try {
-      audioCtxRef.current?.close();
-    } catch {/* */}
-    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-
+    try { recorderRef.current?.stop(); } catch {/* */}
+    try { decoderRef.current?.free(); } catch {/* */}
+    try { audioCtxRef.current?.close(); } catch {/* */}
     recorderRef.current = null;
     decoderRef.current = null;
     audioCtxRef.current = null;
-    mediaStreamRef.current = null;
     nextStartRef.current = 0;
-
     setState("idle");
-  }, [state]);
+  }, []);
 
   const pushOggPage = useCallback(
     (page: Uint8Array) => {
@@ -261,16 +229,9 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
   // Unmount cleanup
   useEffect(() => {
     return () => {
-      try {
-        recorderRef.current?.stop();
-      } catch {/* */}
-      try {
-        decoderRef.current?.free();
-      } catch {/* */}
-      try {
-        audioCtxRef.current?.close();
-      } catch {/* */}
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      try { recorderRef.current?.stop(); } catch {/* */}
+      try { decoderRef.current?.free(); } catch {/* */}
+      try { audioCtxRef.current?.close(); } catch {/* */}
     };
   }, []);
 
