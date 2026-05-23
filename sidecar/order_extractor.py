@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -168,6 +167,11 @@ SYSTEM_PROMPT = """You extract restaurant takeout orders from a phone-call trans
 
 You will receive the FULL conversation so far. Return the CURRENT state of the customer's ORDER — what the CUSTOMER actually asked for, after any cancellations, swaps, or quantity changes.
 
+DEFAULT TO EMPTY. If the transcript has no clear customer order, return items=[].
+A short conversation with no clear order is the most common case at call start —
+do not invent items to fill the order. NEVER include an item unless you can quote
+a specific customer utterance that asked for it.
+
 CRITICAL — what counts as an "ordered" item:
 An item is ordered ONLY if the CUSTOMER explicitly asked for it. Look for customer phrases like:
   - "I'd like a {item}"
@@ -181,20 +185,26 @@ An item is ordered ONLY if the CUSTOMER explicitly asked for it. Look for custom
 DO NOT EXTRACT items that appear only in:
   - Vox listing the menu ("we have bulgogi, japchae, haemul pajeon, kimchi trio, ...") — these are NOT orders
   - Vox suggesting something the customer didn't accept ("would you like to try the japchae?" with no customer yes)
+  - Vox's GREETING — Vox often mentions the most popular item in greeting; that is NOT an order
   - Customer asking a QUESTION about an item — these are NEVER orders:
       * "What's in the bibimbap?"
-      * "Is the bulgogi spicy?"
+      * "Is the kimchi jjigae spicy?"
       * "Can you tell me about the japchae?"
       * "How much is the galbi-jjim?"
       * "Do you have pajeon?"
-      * "What sides come with bulgogi?"
+      * "What sides come with the mandu?"
     A line ending in "?" that mentions an item is asking ABOUT the item, not ordering it.
   - Items mentioned in passing as examples or context
-  - Items the customer EXPLICITLY cancelled — "scratch the bulgogi", "cancel the pajeon",
+  - Items the customer EXPLICITLY cancelled — "scratch that", "cancel the pajeon",
     "actually no, drop that" should REMOVE the item from your output, not include it.
 
 The rule: if you can't point at a specific CUSTOMER statement (not question) that asked
 for this item, do NOT include it. When in doubt, OMIT.
+
+ANTI-HALLUCINATION CHECK: Before you output each item, find the customer line in
+the transcript that asked for it. If you cannot, REMOVE that item. The smaller
+extractor models tend to over-include the most popular menu item even when the
+customer never mentioned it — guard against this explicitly.
 
 CONSISTENCY RULE — once an item has been confirmed by Vox, KEEP IT in your output until
 the customer explicitly cancels it. Do not drop a confirmed item just because the
@@ -227,11 +237,26 @@ OTHER RULES:
      If no customization, leave null. Order-level pickup/customer notes go in
      the top-level "notes" field, NOT per-item.
 5. "confirmed": true ONLY if Vox has READ THE ITEM BACK in a confirmation phrasing ("Let me confirm: one bulgogi…", "got it: bulgogi and pajeon"). Vox merely acknowledging ("of course", "sure") doesn't count.
-6. customer_name: extract from EITHER:
-     - Customer self-identifying: "it's under Maya", "I'm Sam", "the name is Alex"
-     - Vox addressing them by name in a confirmation: "Thanks Maya — see you at six", "Got it, Sam"
-   Do NOT invent a name; if the customer never gave one, return null.
-7. customer_phone: extract a 10-digit number from EITHER the customer's line ("515-555-0182") OR Vox echoing it back ("five-one-five five-five-five oh-one-eight-two"). Normalize to "555-555-5555" or "(555) 555-5555". Return null if no number was given.
+6. customer_name: extract ONLY when the CUSTOMER themselves stated a name to use
+   for the order, or directly confirmed a name Vox repeated back:
+     - Customer self-identifying: "it's under Maya", "I'm Sam", "the name is Alex",
+       "put it under John", "for Jamie"
+     - Customer confirming Vox's read-back: Vox says "got it, Sam — see you at six",
+       customer says "yes" or "yep" → name is "Sam"
+   Pick the name as the customer SPELLED OR PRONOUNCED IT. Use Title Case.
+   If Vox guessed a name and the customer did NOT confirm, leave null.
+   If the customer's audio was unclear (STT may produce "Jake" vs "Jacob" vs "Drake")
+   prefer the name VOX read back AND the customer accepted, since both sides heard it.
+   NEVER invent a name. If the customer never stated one or never confirmed one, return null.
+7. customer_phone: extract a 10-digit US phone number from EITHER:
+     - The customer's line: "515-555-0182", "five one five five five five zero one eight two"
+     - Vox echoing it back AND the customer confirming the echo
+   Accept word forms: "five-one-five" = 515, "oh" = 0, "double-three" = 33, "triple-seven" = 777.
+   Normalize the OUTPUT to "(NNN) NNN-NNNN" format. The number must have exactly 10 digits;
+   if you can only collect fewer (caller never finished spelling it), return null instead of
+   guessing the missing digits. Do NOT confuse pickup-time digits (e.g. "six thirty") with
+   phone digits — phone numbers come in long sequences of digits, times are 1–2 digit numbers
+   followed by AM/PM or "o'clock".
 8. pickup_time: format as "H:MM AM/PM" when the customer specifies a time. Accept word forms ("six thirty PM" → "6:30 PM").
 9. caller_finished: true only if the customer has explicitly indicated they are done — "that's it", "that's all", "thanks bye", "perfect that's all". Acknowledgements like "okay" alone are NOT finished signals.
 

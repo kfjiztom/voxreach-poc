@@ -19,11 +19,14 @@ const MOSHI_WS_URL = process.env.NEXT_PUBLIC_MOSHI_WS_URL?.trim();
 const PERSONAPLEX_URL = process.env.NEXT_PUBLIC_PERSONAPLEX_URL?.trim();
 
 export default function HomePage() {
-  const { state } = useCallState();
+  const { state, dispatch } = useCallState();
+  const resetBackstage = () => dispatch({ type: "reset" });
 
   let leftPane: React.ReactNode;
   if (MOSHI_WS_URL) {
-    leftPane = <NativeCallPane state={state} moshiWsUrl={MOSHI_WS_URL} />;
+    leftPane = (
+      <NativeCallPane state={state} moshiWsUrl={MOSHI_WS_URL} onResetBackstage={resetBackstage} />
+    );
   } else if (PERSONAPLEX_URL) {
     leftPane = <IframeCallPane state={state} iframeUrl={PERSONAPLEX_URL} />;
   } else {
@@ -39,7 +42,7 @@ export default function HomePage() {
           content is wider than the cell. */}
       <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {leftPane}
-        <BackstagePane state={state} />
+        <BackstagePane state={state} onReset={resetBackstage} />
       </main>
     </div>
   );

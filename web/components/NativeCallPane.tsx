@@ -13,6 +13,11 @@ interface NativeCallPaneProps {
   state: CallState;
   /** moshi.server WebSocket URL, e.g. ws://localhost:8998/api/chat */
   moshiWsUrl: string;
+  /** Optional — when provided, clears the backstage UI state on every new call.
+   *  Belt-and-suspenders: the sidecar also emits call_started which the reducer
+   *  picks up, but doing this client-side too eliminates any visible stale-state
+   *  flash while the SSE event is in flight. */
+  onResetBackstage?: () => void;
 }
 
 /**
@@ -23,7 +28,7 @@ interface NativeCallPaneProps {
  * "what the kitchen sees". Compact header, prominent activity ring, scrollable
  * transcript that's clearly bounded.
  */
-export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
+export function NativeCallPane({ state, moshiWsUrl, onResetBackstage }: NativeCallPaneProps) {
   const [voxText, setVoxText] = useState<string>("");
   const [showDebug, setShowDebug] = useState(false);
 
@@ -99,12 +104,17 @@ export function NativeCallPane({ state, moshiWsUrl }: NativeCallPaneProps) {
 
   const onCall = useCallback(() => {
     if (session.state === "idle" || session.state === "closed" || session.state === "error") {
+      // Clear the backstage UI before opening the new WS so any leftover
+      // items / transcript from the previous call disappear immediately.
+      // The sidecar will also emit call_started shortly which replaces
+      // state with a fresh CallState — this just avoids the visible flash.
+      onResetBackstage?.();
       session.start();
     } else {
       audio.stop();
       session.stop();
     }
-  }, [session, audio]);
+  }, [session, audio, onResetBackstage]);
 
   const sessionLabel = labelForSession(session.state);
 

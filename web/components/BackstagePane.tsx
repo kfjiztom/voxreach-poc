@@ -7,9 +7,14 @@ import { RetrievalLog } from "./RetrievalLog";
 
 interface BackstagePaneProps {
   state: CallState;
+  /** Optional — when provided, renders a small "Reset" button in the header
+   *  that clears the local UI state without touching the sidecar. Useful when
+   *  a stale item from a previous call is lingering and you want a clean slate
+   *  before the next call's SSE events arrive. */
+  onReset?: () => void;
 }
 
-export function BackstagePane({ state }: BackstagePaneProps) {
+export function BackstagePane({ state, onReset }: BackstagePaneProps) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-y-auto overflow-x-hidden bg-slate950 p-4 text-cream lg:p-6">
       {/* Compact header — single row with title + badges */}
@@ -25,6 +30,16 @@ export function BackstagePane({ state }: BackstagePaneProps) {
           <div className="rounded-full border border-slate700 bg-slate900 px-2.5 py-0.5 font-mono text-[10px] text-cream/60">
             {state.call_id || "no call"}
           </div>
+          {onReset ? (
+            <button
+              type="button"
+              onClick={onReset}
+              className="rounded-full border border-slate700 bg-slate900 px-2.5 py-0.5 font-mono text-[10px] text-cream/60 hover:bg-slate700 hover:text-cream"
+              title="Clear backstage UI state (the next call will repopulate)"
+            >
+              reset
+            </button>
+          ) : null}
         </div>
       </div>
 
