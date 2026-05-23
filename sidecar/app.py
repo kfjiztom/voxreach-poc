@@ -25,7 +25,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from knowledge_search import get_search
 from mock_transcript import play_mock_call
-from order_extractor import get_extractor
+from order_extractor import final_order_check, get_extractor, validate_against_transcript
 from pos_stub import write_order
 from schema import LatencyMetric, RetrievalHit, SSEEvent, TranscriptTurn
 from state import store
@@ -108,6 +108,29 @@ async def call_end():
     state = await store.end_call()
     if state is None:
         raise HTTPException(404, "no active call")
+
+    # Final transcript-grounded sanity check BEFORE the POS write. Walks every
+    # active item on the ticket and confirms there's a customer utterance
+    # supporting it. Items without evidence get marked "removed" (not deleted,
+    # so they still show up in the UI as struck-through) so the kitchen never
+    # receives a hallucinated order. This is the "double-check on the entire
+    # conversation before it passes to Toast" guard.
+    if state.transcript:
+        suspect = final_order_check(state.order.items, list(state.transcript))
+        if suspect:
+            log.warning(
+                "[final-check] dropping %d items with no transcript evidence: %s",
+                len(suspect), ", ".join(suspect),
+            )
+            for item in state.order.items:
+                if item.name in suspect and item.status != "removed":
+                    item.status = "removed"
+                    await store.publish(SSEEvent(event="item_removed", data={"name": item.name}))
+            # Push a fresh snapshot so the UI shows the corrected order
+            await store.publish(SSEEvent(
+                event="order_updated",
+                data={"order": state.order.model_dump(mode="json")},
+            ))
 
     if state.order.active_items:
         await store.publish(SSEEvent(event="pos_write", data={"status": "writing"}))
@@ -216,7 +239,16 @@ async def _maybe_run_extraction(state, *, force: bool = False) -> int | None:
         extraction = await asyncio.to_thread(extractor.extract, list(state.transcript))
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         state.latency.extraction_latency_ms = elapsed_ms
-        await store.apply_extraction(extraction)
+
+        # Transcript-grounded validation — defense against the small-model
+        # hallucination where the extractor "adds" items the customer never
+        # actually mentioned (most commonly bulgogi, since it's the first
+        # item in the menu and in the system prompt examples).
+        cleaned, warnings = validate_against_transcript(extraction, list(state.transcript))
+        for w in warnings:
+            log.warning("[extract-validate] %s", w)
+
+        await store.apply_extraction(cleaned)
         return elapsed_ms
 
 

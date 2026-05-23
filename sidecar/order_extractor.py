@@ -586,6 +586,104 @@ def reset_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Transcript-grounded validation — defends against extractor hallucination
+# ---------------------------------------------------------------------------
+
+
+def _customer_text_concat(transcript: list[TranscriptTurn]) -> str:
+    """Lowercase concatenation of every CUSTOMER turn in the transcript."""
+    return " ".join(t.text for t in transcript if t.role == "customer").lower()
+
+
+def _item_mentioned_by_customer(item_name: str, customer_text: str) -> bool:
+    """Did the customer ever utter a word referring to this item?
+
+    Match heuristic — any of these counts as evidence:
+      1. The full canonical name (lowercased) appears as a substring
+      2. The first word of the canonical name appears (≥4 chars to skip "the")
+      3. A known alias from MENU_INDEX maps to this item
+    """
+    name_lc = item_name.lower()
+    if name_lc in customer_text:
+        return True
+    # First-word match (bulgogi, japchae, mandu, bibimbap, etc.)
+    first = name_lc.split()[0] if name_lc else ""
+    if first and len(first) >= 4 and first in customer_text:
+        return True
+    # Reverse-lookup aliases — find every menu key that points at this item
+    for alias, entry in MENU_INDEX.items():
+        if entry.get("name", "").lower() == name_lc and len(alias) >= 4 and alias in customer_text:
+            return True
+    return False
+
+
+def validate_against_transcript(
+    extraction: "OrderExtractionResult",
+    transcript: list[TranscriptTurn],
+) -> tuple["OrderExtractionResult", list[str]]:
+    """Drop items the customer never actually mentioned. Returns (cleaned, warnings).
+
+    Use this AFTER LLMExtractor.extract() but BEFORE applying to call state.
+    Defends against the small-model hallucination pattern (most often the
+    extractor "adds" the most prominent menu item just because it's in the
+    system prompt).
+
+    Returns a copy of the extraction with the bad items removed, plus a list
+    of human-readable warnings describing what was dropped — these can be
+    surfaced in the UI / logs so the operator knows what the LLM tried to add
+    that we caught.
+    """
+    customer_text = _customer_text_concat(transcript)
+    if not customer_text:
+        # No customer turns yet — nothing to validate against. Trust the
+        # extractor's empty/initial state.
+        return extraction, []
+
+    kept = []
+    warnings = []
+    for item in extraction.items:
+        if _item_mentioned_by_customer(item.name, customer_text):
+            kept.append(item)
+        else:
+            warnings.append(
+                f"dropped {item.name!r} — no customer utterance mentions it "
+                f"(extractor hallucination)"
+            )
+
+    if not warnings:
+        return extraction, []
+
+    # Build a cleaned copy. We don't mutate the input in case the caller
+    # wants to inspect the raw extraction for debugging.
+    cleaned = extraction.model_copy(update={"items": kept})
+    return cleaned, warnings
+
+
+def final_order_check(
+    final_order_items: list,
+    transcript: list[TranscriptTurn],
+) -> list[str]:
+    """Run on call_end — last-chance sanity check before POS write.
+
+    Walks every item on the final order ticket and confirms there's a
+    customer utterance supporting it. Returns a list of suspect items
+    by name (empty if all pass). Caller decides whether to BLOCK the
+    POS write or just FLAG for human review.
+    """
+    customer_text = _customer_text_concat(transcript)
+    if not customer_text:
+        return [it.name for it in final_order_items if it.status != "removed"]
+
+    suspect = []
+    for item in final_order_items:
+        if item.status == "removed":
+            continue
+        if not _item_mentioned_by_customer(item.name, customer_text):
+            suspect.append(item.name)
+    return suspect
+
+
+# ---------------------------------------------------------------------------
 # State diff
 # ---------------------------------------------------------------------------
 

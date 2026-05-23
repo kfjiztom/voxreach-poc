@@ -65,7 +65,8 @@ export interface MoshiAudio {
 const DEFAULT_LEAD = 0.05;
 const ENCODER_SAMPLE_RATE = 24000;        // moshi expects 24 kHz mic input
 const PLAYBACK_SAMPLE_RATE = 48000;        // moshi OUTPUTS 48 kHz audio — verified from decoder reports
-const MAX_PLAYBACK_LEAD_SEC = 0.25;        // drop frames if the queue is more than 250 ms ahead of real time
+const MAX_PLAYBACK_LEAD_SEC = 0.15;        // drop frames if the queue is more than 150 ms ahead of real time
+const PANIC_LATENCY_SEC = 1.5;             // hard reset playback head if we somehow accumulated this much lag
 // RMS amplitude below this counts as silence — skip queuing so we don't push
 // near-zero noise into the playback graph. moshi's full-duplex LM emits
 // continuous audio even when "idle" (it's always thinking) — most of those
@@ -324,11 +325,24 @@ export function useMoshiAudio(options: MoshiAudioOptions): MoshiAudio {
             return;
           }
 
+          // PANIC reset: if latency somehow ballooned past 1.5s (the
+          // drop-frames logic should normally prevent this, but bursts
+          // of unfiltered speech can briefly push past), throw away the
+          // backlog and resume at "now". Audible glitch but recovers
+          // instantly rather than the conversation drifting further
+          // and further behind real time.
+          const now = ctx.currentTime;
+          if (nextStartRef.current > now + PANIC_LATENCY_SEC) {
+            nextStartRef.current = now + 0.05;
+            decodeStatsRef.current.framesDroppedForLag += 1;
+            decodeStatsRef.current.decodesOk += 1;
+            return;
+          }
+
           // Cap latency: if the playback head is already too far ahead of
           // wall clock, the queue is full (moshi probably burst-sent a few
           // frames after a stall). Drop this frame so already-queued
           // buffers play out and nextStartRef catches back up to now.
-          const now = ctx.currentTime;
           if (nextStartRef.current > now + MAX_PLAYBACK_LEAD_SEC) {
             decodeStatsRef.current.framesDroppedForLag += 1;
             decodeStatsRef.current.decodesOk += 1;
