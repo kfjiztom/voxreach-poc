@@ -31,9 +31,13 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       <Header />
-      <main className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      {/* Lock main to viewport remainder so each pane scrolls internally
+          instead of the whole page growing past the window. The
+          minmax(0,1fr) trick is what prevents grid blowout when child
+          content is wider than the cell. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {leftPane}
         <BackstagePane state={state} />
       </main>
